@@ -1159,8 +1159,14 @@ typedef struct {
 TARGET_AVX2
 int Zf(sampler)(void *ctx, fpr mu, fpr isigma);
 
+#if FALCON_SCA_PROTECT && !FALCON_AVX2
+/* Protected variant (Algorithm 5, Lin et al. PKC 2025): writes 18 entries
+ * encoded in {1, 2} into z_array; caller reconstructs z+ via LSB sum. */
+void Zf(gaussian0_sampler)(int *z_array, prng *p);
+#else
 TARGET_AVX2
 int Zf(gaussian0_sampler)(prng *p);
+#endif
 
 /* ==================================================================== */
 

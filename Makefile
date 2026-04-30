@@ -35,6 +35,9 @@ APPVERSION = "$(APPVERSION_M).$(APPVERSION_N).$(APPVERSION_P)"
 
 # Application source files
 APP_SOURCE_PATH += src
+
+#comment to remove SCA protection
+DEFINES += FALCON_SCA_PROTECT=1       
  
 # Dilithium configuration
 DEFINES += DILITHIUM_MODE=2

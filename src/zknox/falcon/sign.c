@@ -1091,8 +1091,13 @@ do_sign_dyn(samplerZ samp, void *samp_ctx, int16_t *s2,
  * on zero and standard deviation 1.8205, with a precision of 72 bits.
  */
 TARGET_AVX2
+#if FALCON_SCA_PROTECT && !FALCON_AVX2
+void
+Zf(gaussian0_sampler)(int *z_array, prng *p)
+#else
 int
 Zf(gaussian0_sampler)(prng *p)
+#endif
 {
 #if FALCON_AVX2 // yyyAVX2+1
 
@@ -1253,7 +1258,9 @@ Zf(gaussian0_sampler)(prng *p)
 	uint32_t v0, v1, v2, hi;
 	uint64_t lo;
 	size_t u;
+#if !FALCON_SCA_PROTECT
 	int z;
+#endif
 
 	/*
 	 * Get a random 72-bit value, into three 24-bit limbs v0..v2.
@@ -1268,6 +1275,29 @@ Zf(gaussian0_sampler)(prng *p)
 	 * Sampled value is z, such that v0..v2 is lower than the first
 	 * z elements of the table.
 	 */
+#if FALCON_SCA_PROTECT
+	/* Algorithm 5 (Lin et al. PKC 2025): replace the third subtraction
+	 * "cc = (v2 - w2 - cc) >> 31" with an encoding that produces
+	 * {1, 2} instead of {0, 0xFFFFFFFF} in the upper bits. This eliminates
+	 * the Hamming weight gap that leaks z+ via half-Gaussian leakage.
+	 *
+	 * Output is written to z_array[0..17]; each entry is in {1, 2}, with
+	 * (entry & 1) = 1 if v < RCDT[i], 0 otherwise. Caller does the bit-sum.
+	 *
+	 * The signature change (return type int -> void(int*, prng*)) is
+	 * required by Algorithm 6 in the protected SamplerZ. */
+	for (u = 0; u < (sizeof dist) / sizeof(dist[0]); u += 3) {
+		uint32_t w0, w1, w2, cc;
+		uint32_t bb = 0x1FFFFFFu;
+
+		w0 = dist[u + 2];
+		w1 = dist[u + 1];
+		w2 = dist[u + 0];
+		cc = (v0 - w0) >> 31;
+		cc = (v1 - w1 - cc) >> 31;
+		z_array[u/3] = (int)(((bb - v2 + w2 + cc) >> 24) & 0x3);
+	}
+#else
 	z = 0;
 	for (u = 0; u < (sizeof dist) / sizeof(dist[0]); u += 3) {
 		uint32_t w0, w1, w2, cc;
@@ -1281,6 +1311,7 @@ Zf(gaussian0_sampler)(prng *p)
 		z += (int)cc;
 	}
 	return z;
+#endif
 
 #endif // yyyAVX2-
 }
@@ -1288,6 +1319,101 @@ Zf(gaussian0_sampler)(prng *p)
 /*
  * Sample a bit with probability exp(-x) for some x >= 0.
  */
+#if FALCON_SCA_PROTECT
+/* Protected BerExp (Algorithm 7, Lin et al. PKC 2025).
+ *
+ * Computes the exp(-x) decomposition over ALL (b' in {1,2}) x (z+ in {0..18})
+ * combinations, then indexes into the precomputed table by (b_in, z0_index).
+ * This removes the dependency of timing/power consumption on the actual
+ * (b', z+) being used.
+ *
+ * x_array[b'][z+]   = precomputed x values (input)
+ * z0_array[0..3]    = the four candidate z+ values from the 4 BaseSampler calls
+ * z0_index          = index in {0..3} selecting which z+ to use
+ * s_in              = integer center s = floor(mu)
+ * b_in              = sign in {1, 2}
+ */
+static int
+BerExp(prng *p, fpr x_array[3][19], fpr ccs, int *z0_array,
+       int z0_index, int s_in, int b_in)
+{
+	int i;
+	uint32_t sw, w;
+	int s_array[3][19];
+	fpr r_array[3][19];
+	uint64_t z_array[2][19];
+	uint64_t z_prime;
+
+	for (int b_i = 1; b_i < 3; b_i++) {
+		for (int j = 0; j < 19; j++) {
+			s_array[b_i][j] = (int)fpr_trunc(
+				fpr_mul(x_array[b_i][j], fpr_inv_log2));
+			r_array[b_i][j] = fpr_sub(x_array[b_i][j],
+				fpr_mul(fpr_of(s_array[b_i][j]), fpr_log2));
+			sw = (uint32_t)s_array[b_i][j];
+			sw ^= (sw ^ 63) & -((63 - sw) >> 31);
+			s_array[b_i][j] = (int)sw;
+			z_array[b_i - 1][j] =
+				((fpr_expm_p63(r_array[b_i][j], ccs) << 1) - 1)
+				>> s_array[b_i][j];
+		}
+	}
+
+	z_prime = z_array[b_in >> 1][z0_array[z0_index] - s_in];
+
+	i = 64;
+	do {
+		i -= 8;
+		w = prng_get_u8(p) - ((uint32_t)(z_prime >> i) & 0xFF);
+	} while (!w && i > 0);
+	return (int)(w >> 31);
+}
+
+/* Precomputed tables for Algorithm 6 (line 16-19): saves 19 FPR mul
+ * + conversions from int z+ -> FPR per call to compute_x. */
+static const fpr z0_sqr_inv_2sqrsigma0[19] = {
+	0,
+	4594603506513722306, 4603610705768463298, 4608793741173732154,
+	4612617905023204290, 4615675366023746911, 4617800940428473146,
+	4620009106706642817, 4621625104277945282, 4623068905305979298,
+	4624682565278487903, 4625831450752485245, 4626808139683214138,
+	4627869758086180326, 4629016305961383809, 4629974100122847238,
+	4630632303532686274, 4631332971678643958, 4632076104560720290
+};
+
+static const fpr z0_fpr[19] = {
+	0,
+	4607182418800017408, 4611686018427387904, 4613937818241073152,
+	4616189618054758400, 4617315517961601024, 4618441417868443648,
+	4619567317775286272, 4620693217682128896, 4621256167635550208,
+	4621819117588971520, 4622382067542392832, 4622945017495814144,
+	4623507967449235456, 4624070917402656768, 4624633867356078080,
+	4625196817309499392, 4625478292286210048, 4625759767262920704
+};
+
+/* Algorithm 6 line 16-19: precompute x[b'][z+] for all (b', z+) pairs. */
+static void
+compute_x(fpr x_array[3][19], fpr *c_bar_array, fpr dsss)
+{
+	for (int b_i = 1; b_i < 3; b_i++) {
+		for (int j = 0; j < 19; j++) {
+			x_array[b_i][j] = fpr_sub(
+				fpr_mul(
+					fpr_sqr(fpr_add(z0_fpr[j], c_bar_array[b_i])),
+					dsss),
+				z0_sqr_inv_2sqrsigma0[j]);
+		}
+	}
+}
+
+/* Lookup table mapping a 4-bit random index to a sign in {1, 2}. */
+static const int b_table_protect[16] = {
+	2, 1, 1, 2, 2, 1, 1, 2,
+	2, 1, 1, 2, 2, 1, 1, 2
+};
+
+#else /* !FALCON_SCA_PROTECT */
+
 TARGET_AVX2
 static int
 BerExp(prng *p, fpr x, fpr ccs)
@@ -1343,6 +1469,7 @@ BerExp(prng *p, fpr x, fpr ccs)
 	} while (!w && i > 0);
 	return (int)(w >> 31);
 }
+#endif /* FALCON_SCA_PROTECT */
 
 /*
  * The sampler produces a random integer that follows a discrete Gaussian
@@ -1352,6 +1479,132 @@ BerExp(prng *p, fpr x, fpr ccs)
  * The value of sigma MUST lie between 1 and 2 (i.e. isigma lies between
  * 0.5 and 1); in Falcon, sigma should always be between 1.2 and 1.9.
  */
+#if FALCON_SCA_PROTECT
+/* Protected SamplerZ (Algorithm 6, Lin et al. PKC 2025).
+ *
+ * Differences with the unprotected version:
+ *   - 4 calls to gaussian0_sampler instead of 1, with random index selection
+ *     (decorrelates power consumption from the actual z+ used)
+ *   - sign b encoded via 4-bit lookup into b_table_protect ({1, 2}) instead
+ *     of {0, 1} (eliminates sign-flip Hamming weight gap)
+ *   - x precomputed for both b' values and all 19 z+ values, then indexed
+ *     (eliminates secret-dependent variation in x computation)
+ *   - BerExp computes all 38 (b', z+) decompositions, then indexes
+ *     (eliminates secret-dependent variation in rejection sampling)
+ *
+ * Caveats:
+ *   - PRNG tape consumption changes (4x gaussian0_sampler + extra index
+ *     draws), so signatures are NOT byte-identical to the unprotected
+ *     implementation, even with the same seed and message.
+ *   - Stack usage increases by ~1.7 KB per call. On Nano S+ this is
+ *     within budget but tight; if stack overflows, move large arrays
+ *     (z00..z03_arr, z_arr, x_arr) into the working area.
+ */
+int
+Zf(sampler)(void *ctx, fpr mu, fpr isigma)
+{
+	sampler_context *spc;
+	int s;
+	fpr r, dss, ccs;
+	fpr c_bar[3];
+
+	spc = (sampler_context *)ctx;
+
+	/*
+	 * Center is mu = s + r with s an integer and 0 <= r < 1.
+	 */
+	s = (int)fpr_floor(mu);
+	r = fpr_sub(mu, fpr_of(s));
+
+	c_bar[1] = r;
+	c_bar[2] = fpr_sub(fpr_of(1), r);
+
+	/* dss = 1/(2*sigma^2). */
+	dss = fpr_half(fpr_sqr(isigma));
+
+	/* ccs = sigma_min / sigma. */
+	ccs = fpr_mul(isigma, spc->sigma_min);
+
+	for (;;) {
+		int b, b_idx, z0_idx;
+		int z00_arr[18], z01_arr[18], z02_arr[18], z03_arr[18];
+		int z0_arr[4];
+		int z_arr[3][19];
+		fpr x_arr[3][19];
+		int z00_temp, z01_temp, z02_temp, z03_temp;
+
+		/* Sign b' in {1, 2} via 4-bit index into b_table. */
+		b_idx = (int)prng_get_u8(&spc->p) & 0xF;
+		b = b_table_protect[b_idx];
+
+		/* Four protected BaseSampler calls (Algorithm 5 output). */
+		Zf(gaussian0_sampler)(z00_arr, &spc->p);
+		Zf(gaussian0_sampler)(z01_arr, &spc->p);
+		Zf(gaussian0_sampler)(z02_arr, &spc->p);
+		Zf(gaussian0_sampler)(z03_arr, &spc->p);
+
+		/* Reconstruct each z+ from the {1,2}-encoded array via LSB sum.
+		 * Then add center s and apply the (18 + 2*s - x) transform that
+		 * keeps z0_arr[i] = s + z+ regardless of which BaseSampler was
+		 * picked. (See Algorithm 6, lines 8-11 in the paper.) */
+		z00_temp = s
+			+ (z00_arr[17] & 1) + (z00_arr[16] & 1) + (z00_arr[15] & 1)
+			+ (z00_arr[14] & 1) + (z00_arr[13] & 1) + (z00_arr[12] & 1)
+			+ (z00_arr[11] & 1) + (z00_arr[10] & 1) + (z00_arr[ 9] & 1)
+			+ (z00_arr[ 8] & 1) + (z00_arr[ 7] & 1) + (z00_arr[ 6] & 1)
+			+ (z00_arr[ 5] & 1) + (z00_arr[ 4] & 1) + (z00_arr[ 3] & 1)
+			+ (z00_arr[ 2] & 1) + (z00_arr[ 1] & 1) + (z00_arr[ 0] & 1);
+		z0_arr[0] = 18 + 2 * s - z00_temp;
+
+		z01_temp = s
+			+ (z01_arr[17] & 1) + (z01_arr[16] & 1) + (z01_arr[15] & 1)
+			+ (z01_arr[14] & 1) + (z01_arr[13] & 1) + (z01_arr[12] & 1)
+			+ (z01_arr[11] & 1) + (z01_arr[10] & 1) + (z01_arr[ 9] & 1)
+			+ (z01_arr[ 8] & 1) + (z01_arr[ 7] & 1) + (z01_arr[ 6] & 1)
+			+ (z01_arr[ 5] & 1) + (z01_arr[ 4] & 1) + (z01_arr[ 3] & 1)
+			+ (z01_arr[ 2] & 1) + (z01_arr[ 1] & 1) + (z01_arr[ 0] & 1);
+		z0_arr[1] = 18 + 2 * s - z01_temp;
+
+		z02_temp = s
+			+ (z02_arr[17] & 1) + (z02_arr[16] & 1) + (z02_arr[15] & 1)
+			+ (z02_arr[14] & 1) + (z02_arr[13] & 1) + (z02_arr[12] & 1)
+			+ (z02_arr[11] & 1) + (z02_arr[10] & 1) + (z02_arr[ 9] & 1)
+			+ (z02_arr[ 8] & 1) + (z02_arr[ 7] & 1) + (z02_arr[ 6] & 1)
+			+ (z02_arr[ 5] & 1) + (z02_arr[ 4] & 1) + (z02_arr[ 3] & 1)
+			+ (z02_arr[ 2] & 1) + (z02_arr[ 1] & 1) + (z02_arr[ 0] & 1);
+		z0_arr[2] = 18 + 2 * s - z02_temp;
+
+		z03_temp = s
+			+ (z03_arr[17] & 1) + (z03_arr[16] & 1) + (z03_arr[15] & 1)
+			+ (z03_arr[14] & 1) + (z03_arr[13] & 1) + (z03_arr[12] & 1)
+			+ (z03_arr[11] & 1) + (z03_arr[10] & 1) + (z03_arr[ 9] & 1)
+			+ (z03_arr[ 8] & 1) + (z03_arr[ 7] & 1) + (z03_arr[ 6] & 1)
+			+ (z03_arr[ 5] & 1) + (z03_arr[ 4] & 1) + (z03_arr[ 3] & 1)
+			+ (z03_arr[ 2] & 1) + (z03_arr[ 1] & 1) + (z03_arr[ 0] & 1);
+		z0_arr[3] = 18 + 2 * s - z03_temp;
+
+		/* Random index in {0..3} selecting which BaseSampler output
+		 * is used for the actual sample. */
+		z0_idx = (int)prng_get_u8(&spc->p) & 0x3;
+
+		/* Precompute z[b'][z+] for both b' in {1,2} and all 19 z+ values. */
+		for (int j = 0; j < 19; j++) {
+			z_arr[1][j] = s - j;          /* b' = 1: z = -z+ + s */
+			z_arr[2][j] = 1 + s + j;      /* b' = 2: z = 1 + z+ + s */
+		}
+
+		/* Precompute x[b'][z+] for both b' and all 19 z+ values. */
+		compute_x(x_arr, c_bar, dss);
+
+		if (BerExp(&spc->p, x_arr, ccs, z0_arr, z0_idx, s, b)) {
+			/* z+ = z0_arr[z0_idx] - s, then return z[b'][z+]. */
+			return z_arr[b][z0_arr[z0_idx] - s];
+		}
+	}
+}
+
+#else /* !FALCON_SCA_PROTECT — original unprotected sampler */
+
 TARGET_AVX2
 int
 Zf(sampler)(void *ctx, fpr mu, fpr isigma)
@@ -1437,6 +1690,8 @@ Zf(sampler)(void *ctx, fpr mu, fpr isigma)
 		}
 	}
 }
+
+#endif /* FALCON_SCA_PROTECT */
 
 /* see inner.h */
 void

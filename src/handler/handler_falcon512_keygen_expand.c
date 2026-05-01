@@ -1,5 +1,5 @@
 /*
- * handler_falcon_keygen_expand.c — Falcon-1024 streaming keygen expansion
+ * handler_falcon512_keygen_expand.c — Falcon-1024 streaming keygen expansion
  *                                   for Ledger Nano S Plus (v0.5.2)
  *
  * Consumes the in-BSS (f, g, F, G) produced by the previous FALCON_KEYGEN
@@ -63,16 +63,25 @@
 #include "../globals.h"
 #include "send_response.h"
 #include "zkn_errors.h"
-#include "handler_falcon_keygen_expand.h"
+#include "handler_falcon512_keygen_expand.h"
 #include "falcon_inner.h"
 
-#define FLOGN        10
-#define FN           (1 << FLOGN)                /* 1024 */
-#define HN           (FN >> 1)                    /* 512  */
-#define DFS_LOGN     9
+#define FLOGN        9
+#define FN           (1 << FLOGN)                /* 512 */
+#define HN           (FN >> 1)                    /* 256  */
+#define DFS_LOGN     8
 #define NODE_MAC_LEN 16
-#define SLOT_BYTES   (FN * sizeof(fpr))           /* 8192 */
-#define N_SLOTS      4                             /* 32768 B work_buf */
+#define SLOT_BYTES   (FN * sizeof(fpr))           /* 4096 (Falcon-512) */
+#define N_SLOTS      4                             /* 16 KB used (32 KB allocated) */
+
+/* IMPORTANT: the persistent walker state struct is SHARED with Falcon-1024.
+ * To make this safe, the struct layout MUST match the Falcon-1024 one
+ * (DFS_LOGN_STORAGE = 9). At runtime we only use indices [0..DFS_LOGN-1]
+ * for Falcon-512 (DFS_LOGN = 8); the extra slot is harmless padding.
+ * Sharing saves ~250 B BSS — critical because v0.7.0 was already at the
+ * SRAM limit on Nano S+. Adding a second 250 B kstate hits 'stack section
+ * too small' at link time. */
+#define DFS_LOGN_STORAGE 9
 
 /* ================================================================
  * Sub-phase state machine
@@ -98,8 +107,8 @@ enum {
 typedef struct {
     int     phase;
     int     depth;
-    int     child_phase[DFS_LOGN];
-    size_t  ptr_offset[DFS_LOGN + 1];
+    int     child_phase[DFS_LOGN_STORAGE];        /* sized to fit Falcon-1024 */
+    size_t  ptr_offset[DFS_LOGN_STORAGE + 1];
     size_t  cum_off;
     size_t  node_shipped;
     size_t  node_len;
@@ -108,10 +117,9 @@ typedef struct {
     uint8_t l0_tag[NODE_MAC_LEN];
 } falcon_keygen_expand_state_t;
 
-/* Persistent across APDUs (BSS). Small (~250 B). */
-/* Non-static so handler_falcon512_keygen_expand.c can share this storage
- * via `extern`. The two variants are mutually exclusive at runtime. */
-falcon_keygen_expand_state_t g_kstate;
+/* Defined in handler_falcon_keygen_expand.c (Falcon-1024). Both variants
+ * share the same persistent BSS storage — they cannot run concurrently. */
+extern falcon_keygen_expand_state_t g_kstate;
 
 /* Work buffer aliased onto the existing sign area. Exactly 4 slots of
  * 8192 B = 32768 B = sizeof(g_zknox._falcon_sign_area). */
@@ -387,7 +395,7 @@ static void walker_step(int tree_slot, int tmp_slot, int end_phase) {
 /* ================================================================
  * APDU dispatcher
  * ================================================================ */
-int handler_falcon_keygen_expand(buffer_t *cdata, uint8_t p1, uint8_t p2) {
+int handler_falcon512_keygen_expand(buffer_t *cdata, uint8_t p1, uint8_t p2) {
     ZKN_ERROR_INIT();
 
     /* All sub-phases require the key to have been derived already. */

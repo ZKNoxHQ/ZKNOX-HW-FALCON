@@ -1,6 +1,13 @@
 /*****************************************************************************
  *   Ledger App Boilerplate.
- *   Falcon-1024-only build (Dilithium and related INS removed).
+ *   Falcon-1024 + Falcon-512 build (v0.1.1).
+ *
+ *   Both variants coexist in the same firmware via distinct INS codes:
+ *     0x30 / 0x31 / 0x33 / 0x34   Falcon-1024 (v0.7.0, unchanged)
+ *     0x40 / 0x41 / 0x43 / 0x44   Falcon-512  (v0.1.0, additive)
+ *
+ *   They share g_zknox storage but cannot run concurrently — each KEYGEN
+ *   resets falcon_ready and overwrites the persistent secret material.
  *****************************************************************************/
 
 #include <stdint.h>
@@ -24,6 +31,11 @@
 #include "handler_falcon.h"
 #include "handler_falcon_sign.h"
 #include "handler_falcon_keygen_expand.h"
+
+/* Falcon-512 additions (v0.1.0) */
+#include "handler_falcon512.h"
+#include "handler_falcon512_sign.h"
+#include "handler_falcon512_keygen_expand.h"
 
 int apdu_dispatcher(const command_t *cmd) {
     LEDGER_ASSERT(cmd != NULL, "NULL cmd");
@@ -93,9 +105,8 @@ int apdu_dispatcher(const command_t *cmd) {
             buf.offset = 0;
             return handler_provide_token_info(&buf);
 
-        /* ---- Falcon-1024 post-quantum signature ---- */
+        /* ---- Falcon-1024 post-quantum signature (v0.7.0) ---- */
         case FALCON_KEYGEN:
-            /* v0.6.0: seed derived on-device via BIP-32. No data payload. */
             if (cmd->p1 != 0 || cmd->p2 != 0) {
                 return io_send_sw(SWO_INCORRECT_P1_P2);
             }
@@ -120,8 +131,6 @@ int apdu_dispatcher(const command_t *cmd) {
             return handler_falcon_sign(&buf, cmd->p1, cmd->p2);
 
         case FALCON_KEYGEN_EXPAND:
-            /* Sub-phase selector in P1 (0x00 COMPUTE_L0 … 0x05 GET_NEXT_L).
-             * Data payload is always empty. */
             if (cmd->lc != 0) {
                 return io_send_sw(SWO_WRONG_DATA_LENGTH);
             }
@@ -129,6 +138,40 @@ int apdu_dispatcher(const command_t *cmd) {
             buf.size = cmd->lc;
             buf.offset = 0;
             return handler_falcon_keygen_expand(&buf, cmd->p1, cmd->p2);
+
+        /* ---- Falcon-512 post-quantum signature (v0.1.0) ---- */
+        case FALCON512_KEYGEN:
+            if (cmd->p1 != 0 || cmd->p2 != 0) {
+                return io_send_sw(SWO_INCORRECT_P1_P2);
+            }
+            if (cmd->lc != 0) {
+                return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            }
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            return handler_falcon512_keygen(&buf);
+
+        case FALCON512_GET_PK:
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            return handler_falcon512_get_pk(&buf, cmd->p1, cmd->p2);
+
+        case FALCON512_SIGN:
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            return handler_falcon512_sign(&buf, cmd->p1, cmd->p2);
+
+        case FALCON512_KEYGEN_EXPAND:
+            if (cmd->lc != 0) {
+                return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            }
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            return handler_falcon512_keygen_expand(&buf, cmd->p1, cmd->p2);
 
         default:
             return io_send_sw(SWO_INVALID_INS);

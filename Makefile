@@ -15,11 +15,41 @@
 #   limitations under the License.
 # ****************************************************************************
 
-ifeq ($(BOLOS_SDK),)
-$(error Environment variable BOLOS_SDK is not set)
-endif
+########################################
+#         Docker passthrough           #
+########################################
+# Run `make docker` from the repo root (outside the container) to drop into
+# the Ledger build container with the project bind-mounted at /app. Once
+# inside, run `make load`, `make`, etc. as usual.
+#
+# Path-independent: $(CURDIR) is the directory of this Makefile, regardless
+# of where you invoke make from. Replaces docker.sh.
 
+DOCKER_IMAGE := ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools:latest
+
+# Detect if we're outside the container (no BOLOS_SDK set).
+# When outside, the `docker` target is the only thing that should work.
+# When inside, BOLOS_SDK is exported by the container's entrypoint.
+
+.PHONY: docker docker-pull
+docker:
+	@echo ">>> Entering Ledger build container with $(CURDIR) -> /app"
+	sudo docker run --rm -ti --user 1000:1000 --privileged \
+	    -v /dev/bus/usb:/dev/bus/usb \
+	    -v $(CURDIR):/app \
+	    $(DOCKER_IMAGE)
+
+docker-pull:
+	sudo docker pull $(DOCKER_IMAGE)
+
+# All other targets need BOLOS_SDK set (which the container provides).
+ifeq ($(BOLOS_SDK),)
+ifeq ($(filter docker docker-pull help,$(MAKECMDGOALS)),)
+$(error Environment variable BOLOS_SDK is not set. Run `make docker` first to enter the build container.)
+endif
+else
 include $(BOLOS_SDK)/Makefile.target
+endif
 
 ########################################
 #        Mandatory configuration       #
@@ -36,13 +66,9 @@ APPVERSION = "$(APPVERSION_M).$(APPVERSION_N).$(APPVERSION_P)"
 # Application source files
 APP_SOURCE_PATH += src
 
-#comment to remove SCA protection
-DEFINES += FALCON_SCA_PROTECT=1       
- 
-# Dilithium configuration
-DEFINES += DILITHIUM_MODE=2
-ETHDILITHIUM ?= 0
-DEFINES += ETHDILITHIUM=$(ETHDILITHIUM)
+# Comment out to remove SCA protection (Lin et al PKC 2025).
+# Adds ~36% overhead on FALCON_SIGN; KEYGEN/KEYGEN_EXPAND unchanged.
+DEFINES += FALCON_SCA_PROTECT=1
 
 
 # Optimize for embedded
@@ -172,4 +198,6 @@ DISABLE_DEFAULT_IO_SEPROXY_BUFFER_SIZE = 1 # To allow custom size declaration
 # streaming but is unlikely to fit given the current BSS usage.
 #DEFINES += IO_SEPROXYHAL_BUFFER_SIZE_B=4096
 
+ifneq ($(BOLOS_SDK),)
 include $(BOLOS_SDK)/Makefile.standard_app
+endif

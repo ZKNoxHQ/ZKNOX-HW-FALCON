@@ -15,6 +15,12 @@
 #   limitations under the License.
 # ****************************************************************************
 
+# .DEFAULT_GOAL must be set before the docker target so that plain `make`
+# resolves to the SDK's `default` target (defined when BOLOS_SDK is set
+# and Makefile.standard_app is included at the bottom of this file) and
+# NOT to the docker passthrough below.
+.DEFAULT_GOAL := default
+
 ########################################
 #         Docker passthrough           #
 ########################################

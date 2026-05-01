@@ -17,6 +17,7 @@
  *****************************************************************************/
 
 #include "os.h"
+#include "os_io_seproxyhal.h"
 #include "glyphs.h"
 #include "nbgl_use_case.h"
 
@@ -29,7 +30,11 @@
 //  -----------------------------------------------------------
 
 void app_quit(void) {
-    // exit app here
+    /* Give the OS a clean IO state before exiting. Without this, quitting
+     * immediately after the last APDU's response can leave the seproxyhal
+     * subsystem in an inconsistent state — on Nano S+ this manifests as
+     * a black screen during the OS dashboard return. */
+    io_seproxyhal_disable_io();
     os_sched_exit(-1);
 }
 

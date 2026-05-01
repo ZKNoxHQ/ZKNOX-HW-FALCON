@@ -73,9 +73,18 @@ int handler_falcon_keygen(buffer_t *cdata) {
 
     size_t tmp_size;
     uint8_t *tmp = falcon_sign_get_tmp_buffer(&tmp_size);
+
+    /* G is not stored persistently (saves 1024 B BSS).
+     * Provide an ephemeral buffer inside _falcon_sign_area, just below h,
+     * for falcon_keygen to write G into. After this handler returns, the
+     * area is reused by subsequent operations and G is recomputed on
+     * demand via Zf(complete_private). */
+    int8_t *G_ephemeral = (int8_t *)((uint8_t *)g_zknox._falcon_sign_area
+                                      + FALCON_H_OFFSET
+                                      - FALCON_FN * sizeof(int8_t));
     falcon_keygen(&rng,
         g_zknox.falcon_f, g_zknox.falcon_g,
-        g_zknox.falcon_F, g_zknox.falcon_G,
+        g_zknox.falcon_F, G_ephemeral,
         FALCON_H_PTR, FALCON_LOGN, tmp);
 
     g_zknox.falcon_ready = 1;

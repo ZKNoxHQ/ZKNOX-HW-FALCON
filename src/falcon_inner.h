@@ -70,9 +70,10 @@
 #include "zknox/falcon/inner.h"
 
 /* Clean aliases */
-#define falcon_keygen          Zf(keygen)
-#define falcon_to_ntt_monty    Zf(to_ntt_monty)
-#define falcon_verify_raw      Zf(verify_raw)
+#define falcon_keygen              Zf(keygen)
+#define falcon_to_ntt_monty        Zf(to_ntt_monty)
+#define falcon_verify_raw          Zf(verify_raw)
+#define falcon_complete_private    Zf(complete_private)
 #define falcon512_hash_to_point    Zf(hash_to_point_vartime)
 
 #endif /* _FALCON_INNER_WRAPPER_H */

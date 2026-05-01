@@ -211,7 +211,7 @@ static void rematerialize(fpr *dst, const int8_t *src, int do_neg) {
  * Slot allocation on exit:  SLOT(0)=G00, SLOT(1)=G01, SLOT(2)=G11.
  *                            SLOT(3) is transient scratch.
  * ================================================================ */
-static void gram_phase(void) {
+static void gram_phase(const int8_t *G_buf) {
     fpr *G00 = SLOT(0);
     fpr *G01 = SLOT(1);
     fpr *G11 = SLOT(2);
@@ -226,7 +226,7 @@ static void gram_phase(void) {
 
     /* g01 = b00·adj(b10) + b01·adj(b11),  b10 = FFT(G), b11 = -FFT(F) */
     rematerialize(G01, g_zknox.falcon_g, 0);
-    rematerialize(SCR, g_zknox.falcon_G, 0);
+    rematerialize(SCR, G_buf, 0);
     Zf(poly_muladj_fft)(G01, SCR, FLOGN);
     rematerialize(G11, g_zknox.falcon_f, 1);
     rematerialize(SCR, g_zknox.falcon_F, 1);
@@ -234,7 +234,7 @@ static void gram_phase(void) {
     Zf(poly_add)(G01, G11, FLOGN);
 
     /* g11 = b10·adj(b10) + b11·adj(b11) */
-    rematerialize(G11, g_zknox.falcon_G, 0);
+    rematerialize(G11, G_buf, 0);
     Zf(poly_mulselfadj_fft)(G11, FLOGN);
     rematerialize(SCR, g_zknox.falcon_F, 1);
     Zf(poly_mulselfadj_fft)(SCR, FLOGN);
@@ -289,7 +289,14 @@ static void compute_l0_phase(void) {
     derive_tree_key(kctx.tree_key, g_zknox.falcon_seed);
     derive_tree_mac_key(kctx.mac_key, g_zknox.falcon_seed);
 
-    gram_phase();
+    /* Recompute G from (f, g, F). G is no longer stored persistently
+     * in g_zknox (saves 1024 B BSS). Use SLOT(0)..SLOT(1) as the 4 KB tmp
+     * buffer for complete_private — gram_phase will overwrite them anyway. */
+    int8_t G_buf[FN];
+    Zf(complete_private)(G_buf, g_zknox.falcon_f, g_zknox.falcon_g,
+                         g_zknox.falcon_F, FLOGN, (uint8_t *)SLOT(0));
+
+    gram_phase(G_buf);
     ldlmv_fft_inplace(SLOT(0), SLOT(1), SLOT(2));
 
     /* Encrypt L0 (= SLOT(1)) in place; tag into kctx.l0_tag (NOT at

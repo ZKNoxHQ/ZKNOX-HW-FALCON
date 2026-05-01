@@ -28,12 +28,18 @@ typedef struct {
      * Both ops are mutually exclusive in the host workflow. */
     uint64_t _falcon_sign_area[FALCON_SIGN_BSS_SIZE / 8];
 
-    /* Falcon-1024 persistent. */
+    /* Falcon-1024 persistent secret material.
+     *
+     * NOTE: G is NOT stored — it is recomputed on demand from (f, g, F)
+     * via Zf(complete_private) at the start of each keygen-expand and
+     * sign operation. This saves 1024 B BSS (critical to keep the stack
+     * budget above the Nano S+ minimum at ~1.5 KB). The recomputation
+     * cost is roughly 50-100 ms per sign, ~1% overhead on the 8.5 s sign. */
     uint8_t  falcon_seed[32];
     int8_t   falcon_f[1024];
     int8_t   falcon_g[1024];
     int8_t   falcon_F[1024];
-    int8_t   falcon_G[1024];
+    /* int8_t falcon_G[1024];  -- removed, recomputed on demand */
     uint8_t  falcon_ready;
 } zknox_storage_t;
 extern zknox_storage_t g_zknox;

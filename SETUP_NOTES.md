@@ -1,120 +1,68 @@
-# Setup notes — Falcon-512 v0.1.1
+# Option A v0.1.1 — drop G from BSS, recompute on demand (FIXED)
 
-This package adds Falcon-512 alongside Falcon-1024 in the same firmware,
-without touching any existing v0.7.0 file. New INS codes:
+Saves 1024 B BSS. Free RAM goes from 1556 B to 2580 B.
 
-| INS  | Name                       | Pairs with                |
-|-----:|----------------------------|---------------------------|
-| 0x40 | `FALCON512_KEYGEN`         | 0x30 `FALCON_KEYGEN`      |
-| 0x41 | `FALCON512_GET_PK`         | 0x31 `FALCON_GET_PK`      |
-| 0x43 | `FALCON512_SIGN`           | 0x33 `FALCON_SIGN`        |
-| 0x44 | `FALCON512_KEYGEN_EXPAND`  | 0x34 `FALCON_KEYGEN_EXPAND` |
+## Bug fix vs v0.1.0
 
-## File deployment
+v0.1.0 added `int8_t G_recomputed[FN]` as a struct field at the end of
+`falcon1024_sign_ctx_t`. The struct already had ~31.5 KB of headroom inside
+`_falcon_sign_area` (32 KB). Adding 1024 B made it overflow by ~192 B,
+which corrupted `g_zknox.falcon_seed` at every sign INIT (`memset(&sctx, 0,
+sizeof(struct))` zeroed not just `_falcon_sign_area` but also the seed
+following it in BSS layout).
 
-Files in this package mirror your repo structure. Copy with:
+→ Symptom: `KEYGEN` + `KEYGEN_EXPAND` worked correctly (didn't touch the
+seed), but `SIGN` corrupted the seed at INIT. The L0 MAC verification at
+the start of the LDL feed used the corrupted seed → MAC failed →
+SW=b00a (`SWO_TREE_MAC_FAIL`).
 
-```bash
-cp -r falcon512_v011/src .
-cp -r falcon512_v011/js .
-cp -r falcon512_v011/tools .
-cp falcon512_v011/Makefile .
+## Fix in v0.1.1
+
+Don't add G_recomputed to the struct. Instead, allocate G_local on the
+stack inside `do_compute_s0_sqn`, the only function that uses G during sign:
+
+```c
+static void do_compute_s0_sqn(void) {
+    fpr *z0 = sctx.stk;
+    fpr *z1 = sctx.stk + FN;
+    fpr *buf = sctx.stk + 2*FN;
+
+    int8_t G_local[FN];   /* 1 KB stack */
+    Zf(complete_private)(G_local, falcon_f, falcon_g, falcon_F, FLOGN,
+                         (uint8_t *)sctx.ws);   /* uses sctx.ws as 4 KB tmp */
+
+    /* ... use G_local as before ... */
+}
 ```
 
-That copies:
+`do_compute_s0_sqn` is called from a flat dispatcher path, so stack
+budget at call time is fresh (~2 KB available). `G_local[1024]` (1 KB)
+plus complete_private internal frames (negligible) fits.
+
+## Files modified vs original v0.7.0
 
 | File                                              | Status |
 |---------------------------------------------------|--------|
-| `src/handler/handler_falcon512.c`                 | NEW    |
-| `src/handler/handler_falcon512.h`                 | NEW    |
-| `src/handler/handler_falcon512_sign.c`            | NEW    |
-| `src/handler/handler_falcon512_sign.h`            | NEW    |
-| `src/handler/handler_falcon512_keygen_expand.c`   | NEW    |
-| `src/handler/handler_falcon_keygen_expand.c`      | UPDATE — `static` removed from `g_kstate` (1 line) |
-| `src/handler/handler_falcon512_keygen_expand.h`   | NEW    |
-| `src/zknox/keys/derive_falcon512.c`               | NEW    |
-| `src/apdu/dispatcher.c`                           | UPDATE — adds 4 case branches |
-| `src/types.h`                                     | UPDATE — adds 4 enum entries  |
-| `Makefile`                                        | UPDATE — removes Dilithium, adds `make docker` target |
+| `src/globals.h`                                   | UPDATE — drops `falcon_G[1024]` from `zknox_storage_t` |
+| `src/falcon_inner.h`                              | UPDATE — adds `falcon_complete_private` alias |
+| `src/handler/handler_falcon.c`                    | UPDATE — keygen writes G into ephemeral buffer in `_falcon_sign_area` |
+| `src/handler/handler_falcon_keygen_expand.c`      | UPDATE — `gram_phase()` takes G as parameter; `compute_l0_phase()` recomputes G via complete_private |
+| `src/handler/handler_falcon_sign.c`               | UPDATE — `do_compute_s0_sqn` recomputes G into stack `G_local[FN]` |
+| `src/handler/handler_falcon512.c`                 | UPDATE — same pattern as falcon-1024 keygen |
+| `src/handler/handler_falcon512_keygen_expand.c`   | UPDATE — same pattern as falcon-1024 keygen_expand |
+| `src/handler/handler_falcon512_sign.c`            | UPDATE — same pattern as falcon-1024 sign |
 
-**Only one v0.7.0 file is touched, with a 1-line change:**
-- `src/handler/handler_falcon_keygen_expand.c` — removes `static` from
-  `g_kstate` declaration. This makes the persistent walker state symbol
-  visible to the linker so Falcon-512 can share it via `extern` (saves
-  ~250 B BSS, critical to stay under the Nano S+ stack limit).
+## Performance impact
 
-No other v0.7.0 file is changed:
-- `src/globals.h` ✅
-- `src/falcon_inner.h` ✅
-- `src/handler/handler_falcon.{c,h}` ✅
-- `src/handler/handler_falcon_sign.{c,h}` ✅
-- `src/handler/handler_falcon_keygen_expand.h` ✅
-- `src/zknox/keys/derive.c` ✅
+`complete_private` ≈ 50-100 ms on Nano S+ for Falcon-1024, ~25-50 ms for
+Falcon-512. Adds ~1% to sign duration; ~0.5% to keygen_expand duration.
 
-## `src/types.h`
+## Stack usage
 
-The included `src/types.h` is your existing file with four entries added
-to the `command_e` enum (plus a comma fix on the previously-last entry).
-Diff before overwriting to be sure:
+| Function | Stack added |
+|----------|------------:|
+| `compute_l0_phase`  | 1024 B (G_buf) for Falcon-1024, 512 B for Falcon-512 |
+| `do_compute_s0_sqn` | 1024 B (G_local) for Falcon-1024, 512 B for Falcon-512 |
 
-```bash
-diff src/types.h falcon512_v011/src/types.h
-```
-
-You should see only these additions:
-
-```c
-+    FALCON_KEYGEN_EXPAND = 0x34,    (← comma added)
-+    /* Falcon-512 post-quantum signature (v0.1.0) */
-+    FALCON512_KEYGEN = 0x40,        /// Falcon-512 keygen
-+    FALCON512_GET_PK = 0x41,        /// retrieve Falcon-512 public key chunks
-+    FALCON512_SIGN = 0x43,          /// iterative Falcon-512 sign
-+    FALCON512_KEYGEN_EXPAND = 0x44  /// stream Falcon-512 wire blob
-```
-
-If the diff shows anything else (entries you've added since the version
-I had visibility into), don't blindly overwrite — manually add the four
-`FALCON512_*` entries to your existing enum body.
-
-## Build & test
-
-```bash
-# Enter the Ledger build container (replaces docker.sh — path-independent)
-make docker
-
-# Inside the container:
-make clean && make load
-exit
-
-# Test Falcon-1024 still works (regression check)
-cd js
-node falcon1024-full-chain.js
-# Expected: pk SHA-256 = abda0932...
-#           wire SHA-256 = 855edeed...
-
-# Test Falcon-512
-node falcon512-full-chain.js
-# Expected: pk SHA-256 = f3c31b60497fbac856b8c062ef314db2106755356dbd9777d4bff8b03ea9914e
-#           wire SHA-256 = 762097cdab496d2c4c39d80e2751e35b77ebbd8ae19e11e2d4ef738a1c7737c5
-```
-
-## Notes
-
-- **g_zknox storage is shared.** `KEYGEN` (Falcon-1024) and `FALCON512_KEYGEN`
-  both write into `g_zknox.falcon_seed/f/g/F/G/h`. Calling one overwrites the
-  other. There is one active key at a time.
-- **`falcon_ready` is shared too.** After any KEYGEN, both variants think
-  they have a key. Calling `FALCON_GET_PK` after `FALCON512_KEYGEN` will
-  return Falcon-512 bytes — wrong format. Don't mix calls between variants
-  without re-keygen.
-- **The arrays `falcon_f/g/F/G[1024]` are oversized for Falcon-512.**
-  Falcon-512 only fills the first 512 bytes. The other 512 bytes are stale
-  Falcon-1024 data (or zeros after first call). This is harmless because
-  Falcon-512 sign/expand only reads indices [0..511].
-- **`_falcon_sign_area` is 32 KB** — sized for Falcon-1024. Falcon-512 uses
-  ~16 KB of it during keygen-expand. Plenty of room.
-- **JS files are in `js/`**, generated testvecs `falcon512_yellow12_*.bin`
-  reference values in there.
-- The `tools/wire_sim.c` source is included so you can regenerate testvecs
-  if needed (compile against Falcon reference impl with `-DFALCON_VARIANT=512`).
-
+Both are isolated paths (no overlap with deep recursion). Free RAM after
+v0.1.1 patch ≈ 2580 B, comfortably above the 1024 B Nano S+ minimum.

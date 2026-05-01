@@ -300,11 +300,19 @@ static void do_compute_s0_sqn(void) {
     fpr *z1 = sctx.stk + FN;
     fpr *buf = sctx.stk + 2*FN;
 
+    /* Recompute G from (f, g, F). G is not stored persistently in g_zknox
+     * (saves 1024 B BSS). complete_private needs 2*FN*sizeof(uint16_t) =
+     * 4 KB of tmp; sctx.ws is exactly that size. */
+    int8_t G_local[FN];
+    Zf(complete_private)(G_local,
+                         g_zknox.falcon_f, g_zknox.falcon_g,
+                         g_zknox.falcon_F, FLOGN, (uint8_t *)sctx.ws);
+
     for (size_t u = 0; u < FN; u++) buf[u] = fpr_of(g_zknox.falcon_g[u]);
     Zf(FFT)(buf, FLOGN);
     Zf(poly_mul_fft)(z0, buf, FLOGN);
 
-    for (size_t u = 0; u < FN; u++) buf[u] = fpr_of(g_zknox.falcon_G[u]);
+    for (size_t u = 0; u < FN; u++) buf[u] = fpr_of(G_local[u]);
     Zf(FFT)(buf, FLOGN);
     Zf(poly_mul_fft)(z1, buf, FLOGN);
 

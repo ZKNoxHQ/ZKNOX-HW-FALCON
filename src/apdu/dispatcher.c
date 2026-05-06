@@ -1,10 +1,12 @@
 /*****************************************************************************
  *   Ledger App Boilerplate.
- *   Falcon-1024 + Falcon-512 build (v0.1.1).
+ *   Falcon-1024 + Falcon-512 + Falcon-512 flash build (v0.2.0).
  *
- *   Both variants coexist in the same firmware via distinct INS codes:
- *     0x30 / 0x31 / 0x33 / 0x34   Falcon-1024 (v0.7.0, unchanged)
- *     0x40 / 0x41 / 0x43 / 0x44   Falcon-512  (v0.1.0, additive)
+ *   Three variants coexist in the same firmware via distinct INS codes:
+ *     0x30 / 0x31 / 0x33 / 0x34   Falcon-1024 streaming (v0.7.0)
+ *     0x40 / 0x41 / 0x43 / 0x44   Falcon-512  streaming (v0.1.0)
+ *     0x60 / 0x61 / 0x62 / 0x63   Falcon-512  flash     (v0.2.0)
+ *     0x64 / 0x65                  flash GET_SIG / DUMP_NVM
  *
  *   They share g_zknox storage but cannot run concurrently — each KEYGEN
  *   resets falcon_ready and overwrites the persistent secret material.
@@ -32,10 +34,13 @@
 #include "handler_falcon_sign.h"
 #include "handler_falcon_keygen_expand.h"
 
-/* Falcon-512 additions (v0.1.0) */
+/* Falcon-512 streaming (v0.1.0) */
 #include "handler_falcon512.h"
 #include "handler_falcon512_sign.h"
 #include "handler_falcon512_keygen_expand.h"
+
+/* Falcon-512 flash variant (phase 2a + 2b, v0.2.0) */
+#include "handler_falcon512_flash.h"
 
 int apdu_dispatcher(const command_t *cmd) {
     LEDGER_ASSERT(cmd != NULL, "NULL cmd");
@@ -172,6 +177,52 @@ int apdu_dispatcher(const command_t *cmd) {
             buf.size = cmd->lc;
             buf.offset = 0;
             return handler_falcon512_keygen_expand(&buf, cmd->p1, cmd->p2);
+
+        /* ---- Falcon-512 flash variant (v0.2.0) ---- */
+        case FALCON512_FLASH_KEYGEN:
+            if (cmd->p1 != 0 || cmd->p2 != 0) {
+                return io_send_sw(SWO_INCORRECT_P1_P2);
+            }
+            if (cmd->lc != 0) {
+                return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            }
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            return handler_falcon512_flash_keygen(&buf);
+
+        case FALCON512_FLASH_GET_PK:
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            return handler_falcon512_flash_get_pk(&buf, cmd->p1, cmd->p2);
+
+        case FALCON512_FLASH_KEYGEN_EXPAND:
+            if (cmd->lc != 0) {
+                return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            }
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            return handler_falcon512_flash_keygen_expand(&buf, cmd->p1, cmd->p2);
+
+        case FALCON512_FLASH_SIGN:
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            return handler_falcon512_flash_sign(&buf, cmd->p1, cmd->p2);
+
+        case FALCON512_FLASH_GET_SIG:
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            return handler_falcon512_flash_get_sig(&buf, cmd->p1, cmd->p2);
+
+        case FALCON512_FLASH_DUMP_NVM:
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            return handler_falcon512_flash_dump_nvm(&buf, cmd->p1, cmd->p2);
 
         default:
             return io_send_sw(SWO_INVALID_INS);

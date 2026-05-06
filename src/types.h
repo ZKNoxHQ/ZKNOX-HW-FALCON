@@ -28,7 +28,14 @@ typedef enum {
     FALCON512_KEYGEN = 0x40,        /// Falcon-512 keygen (BIP-32 derived seed)
     FALCON512_GET_PK = 0x41,        /// retrieve Falcon-512 public key chunks
     FALCON512_SIGN = 0x43,          /// iterative Falcon-512 sign (host-driven)
-    FALCON512_KEYGEN_EXPAND = 0x44  /// stream Falcon-512 wire blob (ct||tag per node)
+    FALCON512_KEYGEN_EXPAND = 0x44, /// stream Falcon-512 wire blob (ct||tag per node)
+    /* Falcon-512 flash variant (phase 2a + 2b) */
+    FALCON512_FLASH_KEYGEN        = 0x60, /// flash keygen (writes pk to NVRAM)
+    FALCON512_FLASH_GET_PK        = 0x61, /// chunked pk read from NVRAM
+    FALCON512_FLASH_KEYGEN_EXPAND = 0x62, /// LDL expand to NVRAM (40 960 B plaintext)
+    FALCON512_FLASH_SIGN          = 0x63, /// flash sign (P1=00 INIT / 06 MSG / 08 NONCE_HOST / 09 GEN_NONCE / 10 SIGN_ALL / 91 GET_NONCE)
+    FALCON512_FLASH_GET_SIG       = 0x64, /// chunked sig retrieval (1024 B int16 LE)
+    FALCON512_FLASH_DUMP_NVM      = 0x65  /// chunked NVRAM dump (debugging)
 } command_e;
 
 /**

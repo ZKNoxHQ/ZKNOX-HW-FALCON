@@ -1,17 +1,14 @@
 /*****************************************************************************
- *   Ledger App Boilerplate.
- *   Falcon-1024 + Falcon-512 + Falcon-512 flash + Falcon-1024 flash (v0.3.0).
+ *   Ledger App — Falcon family dispatcher (v0.4.0 with masked Falcon-512 flash)
  *
- *   Four variants coexist via distinct INS codes:
- *     0x30 / 0x31 / 0x33 / 0x34   Falcon-1024 streaming (v0.7.0)
- *     0x40 / 0x41 / 0x43 / 0x44   Falcon-512  streaming (v0.1.0)
- *     0x60 / 0x61 / 0x62 / 0x63   Falcon-512  flash     (v0.2.0)
+ *     0x30 / 0x31 / 0x33 / 0x34   Falcon-1024 streaming
+ *     0x40 / 0x41 / 0x43 / 0x44   Falcon-512  streaming
+ *     0x60 / 0x61 / 0x62 / 0x63   Falcon-512  flash (unprotected sampler)
  *     0x64 / 0x65                 flash GET_SIG / DUMP_NVM (Falcon-512)
- *     0x70 / 0x71 / 0x72 / 0x73   Falcon-1024 flash     (v0.3.0 — NEW)
+ *     0x66                        Falcon-512  flash SIGN with SCA-protected
+ *                                 sampler (Lin et al. PKC 2025) — NEW
+ *     0x70 / 0x71 / 0x72 / 0x73   Falcon-1024 flash
  *     0x74 / 0x75                 flash GET_SIG / DUMP_NVM (Falcon-1024)
- *
- *   All variants share g_zknox storage but cannot run concurrently — each
- *   KEYGEN resets falcon_ready and overwrites the persistent secret material.
  *****************************************************************************/
 
 #include <stdint.h>
@@ -36,15 +33,13 @@
 #include "handler_falcon_sign.h"
 #include "handler_falcon_keygen_expand.h"
 
-/* Falcon-512 streaming (v0.1.0) */
 #include "handler_falcon512.h"
 #include "handler_falcon512_sign.h"
 #include "handler_falcon512_keygen_expand.h"
 
-/* Falcon-512 flash variant (v0.2.0) */
 #include "handler_falcon512_flash.h"
+#include "handler_falcon512_flash_sign_protect.h"
 
-/* Falcon-1024 flash variant (v0.3.0 — NEW) */
 #include "handler_falcon1024_flash.h"
 
 int apdu_dispatcher(const command_t *cmd) {
@@ -58,221 +53,139 @@ int apdu_dispatcher(const command_t *cmd) {
 
     switch (cmd->ins) {
         case GET_VERSION:
-            if (cmd->p1 != 0 || cmd->p2 != 0) {
-                return io_send_sw(SWO_INCORRECT_P1_P2);
-            }
+            if (cmd->p1 != 0 || cmd->p2 != 0) return io_send_sw(SWO_INCORRECT_P1_P2);
             return handler_get_version();
 
         case GET_APP_NAME:
-            if (cmd->p1 != 0 || cmd->p2 != 0) {
-                return io_send_sw(SWO_INCORRECT_P1_P2);
-            }
+            if (cmd->p1 != 0 || cmd->p2 != 0) return io_send_sw(SWO_INCORRECT_P1_P2);
             return handler_get_app_name();
 
         case GET_PUBLIC_KEY:
-            if (cmd->p1 > 1 || cmd->p2 > 0) {
-                return io_send_sw(SWO_INCORRECT_P1_P2);
-            }
-            if (!cmd->data) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (cmd->p1 > 1 || cmd->p2 > 0) return io_send_sw(SWO_INCORRECT_P1_P2);
+            if (!cmd->data) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_get_public_key(&buf, (bool) cmd->p1);
 
         case SIGN_TX:
             if ((cmd->p1 == P1_START && cmd->p2 != P2_MORE) ||
                 cmd->p1 > P1_MAX ||
-                (cmd->p2 != P2_LAST && cmd->p2 != P2_MORE)) {
+                (cmd->p2 != P2_LAST && cmd->p2 != P2_MORE))
                 return io_send_sw(SWO_INCORRECT_P1_P2);
-            }
-            if (!cmd->data) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (!cmd->data) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_sign_tx(&buf, cmd->p1, (bool) (cmd->p2 & P2_MORE), false);
 
         case SIGN_TOKEN_TX:
             if ((cmd->p1 == P1_START && cmd->p2 != P2_MORE) ||
                 cmd->p1 > P1_MAX ||
-                (cmd->p2 != P2_LAST && cmd->p2 != P2_MORE)) {
+                (cmd->p2 != P2_LAST && cmd->p2 != P2_MORE))
                 return io_send_sw(SWO_INCORRECT_P1_P2);
-            }
-            if (!cmd->data) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (!cmd->data) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_sign_tx(&buf, cmd->p1, (bool) (cmd->p2 & P2_MORE), true);
 
         case PROVIDE_TOKEN_INFO:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_provide_token_info(&buf);
 
-        /* ---- Falcon-1024 streaming (v0.7.0) ---- */
+        /* ---- Falcon-1024 streaming ---- */
         case FALCON_KEYGEN:
-            if (cmd->p1 != 0 || cmd->p2 != 0) {
-                return io_send_sw(SWO_INCORRECT_P1_P2);
-            }
-            if (cmd->lc != 0) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (cmd->p1 != 0 || cmd->p2 != 0) return io_send_sw(SWO_INCORRECT_P1_P2);
+            if (cmd->lc != 0) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon_keygen(&buf);
 
         case FALCON_GET_PK:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon_get_pk(&buf, cmd->p1, cmd->p2);
 
         case FALCON_SIGN:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon_sign(&buf, cmd->p1, cmd->p2);
 
         case FALCON_KEYGEN_EXPAND:
-            if (cmd->lc != 0) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (cmd->lc != 0) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon_keygen_expand(&buf, cmd->p1, cmd->p2);
 
-        /* ---- Falcon-512 streaming (v0.1.0) ---- */
+        /* ---- Falcon-512 streaming ---- */
         case FALCON512_KEYGEN:
-            if (cmd->p1 != 0 || cmd->p2 != 0) {
-                return io_send_sw(SWO_INCORRECT_P1_P2);
-            }
-            if (cmd->lc != 0) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (cmd->p1 != 0 || cmd->p2 != 0) return io_send_sw(SWO_INCORRECT_P1_P2);
+            if (cmd->lc != 0) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon512_keygen(&buf);
 
         case FALCON512_GET_PK:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon512_get_pk(&buf, cmd->p1, cmd->p2);
 
         case FALCON512_SIGN:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon512_sign(&buf, cmd->p1, cmd->p2);
 
         case FALCON512_KEYGEN_EXPAND:
-            if (cmd->lc != 0) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (cmd->lc != 0) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon512_keygen_expand(&buf, cmd->p1, cmd->p2);
 
-        /* ---- Falcon-512 flash variant (v0.2.0) ---- */
+        /* ---- Falcon-512 flash variant ---- */
         case FALCON512_FLASH_KEYGEN:
-            if (cmd->p1 != 0 || cmd->p2 != 0) {
-                return io_send_sw(SWO_INCORRECT_P1_P2);
-            }
-            if (cmd->lc != 0) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (cmd->p1 != 0 || cmd->p2 != 0) return io_send_sw(SWO_INCORRECT_P1_P2);
+            if (cmd->lc != 0) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon512_flash_keygen(&buf);
 
         case FALCON512_FLASH_GET_PK:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon512_flash_get_pk(&buf, cmd->p1, cmd->p2);
 
         case FALCON512_FLASH_KEYGEN_EXPAND:
-            if (cmd->lc != 0) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (cmd->lc != 0) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon512_flash_keygen_expand(&buf, cmd->p1, cmd->p2);
 
         case FALCON512_FLASH_SIGN:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon512_flash_sign(&buf, cmd->p1, cmd->p2);
 
         case FALCON512_FLASH_GET_SIG:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon512_flash_get_sig(&buf, cmd->p1, cmd->p2);
 
         case FALCON512_FLASH_DUMP_NVM:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon512_flash_dump_nvm(&buf, cmd->p1, cmd->p2);
 
-        /* ---- Falcon-1024 flash variant (v0.3.0) ---- */
+        case FALCON512_FLASH_SIGN_PROTECT:
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
+            return handler_falcon512_flash_sign_protect(&buf, cmd->p1, cmd->p2);
+
+        /* ---- Falcon-1024 flash variant ---- */
         case FALCON1024_FLASH_KEYGEN:
-            if (cmd->p1 != 0 || cmd->p2 != 0) {
-                return io_send_sw(SWO_INCORRECT_P1_P2);
-            }
-            if (cmd->lc != 0) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (cmd->p1 != 0 || cmd->p2 != 0) return io_send_sw(SWO_INCORRECT_P1_P2);
+            if (cmd->lc != 0) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon1024_flash_keygen(&buf);
 
         case FALCON1024_FLASH_GET_PK:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon1024_flash_get_pk(&buf, cmd->p1, cmd->p2);
 
         case FALCON1024_FLASH_KEYGEN_EXPAND:
-            if (cmd->lc != 0) {
-                return io_send_sw(SWO_WRONG_DATA_LENGTH);
-            }
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            if (cmd->lc != 0) return io_send_sw(SWO_WRONG_DATA_LENGTH);
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon1024_flash_keygen_expand(&buf, cmd->p1, cmd->p2);
 
         case FALCON1024_FLASH_SIGN:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon1024_flash_sign(&buf, cmd->p1, cmd->p2);
 
         case FALCON1024_FLASH_GET_SIG:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon1024_flash_get_sig(&buf, cmd->p1, cmd->p2);
 
         case FALCON1024_FLASH_DUMP_NVM:
-            buf.ptr = cmd->data;
-            buf.size = cmd->lc;
-            buf.offset = 0;
+            buf.ptr = cmd->data; buf.size = cmd->lc; buf.offset = 0;
             return handler_falcon1024_flash_dump_nvm(&buf, cmd->p1, cmd->p2);
 
         default:

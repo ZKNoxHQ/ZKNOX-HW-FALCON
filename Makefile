@@ -74,7 +74,7 @@ APP_SOURCE_PATH += src
 
 # Comment out to remove SCA protection (Lin et al PKC 2025).
 # Adds ~36% overhead on FALCON_SIGN; KEYGEN/KEYGEN_EXPAND unchanged.
-DEFINES += FALCON_SCA_PROTECT=1
+# DEFINES += FALCON_SCA_PROTECT=1
 
 
 # Optimize for embedded

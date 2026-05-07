@@ -1,61 +1,55 @@
 #pragma once
 
-#include <stddef.h>  // size_t
-#include <stdint.h>  // uint*_t
+#include <stddef.h>
+#include <stdint.h>
 
 #include "bip32.h"
-
 #include "constants.h"
 #include "tx_types.h"
 
-/**
- * Enumeration with expected INS of APDU commands.
- */
 typedef enum {
-    GET_VERSION = 0x03,         /// version of the application
-    GET_APP_NAME = 0x04,        /// name of the application
-    GET_PUBLIC_KEY = 0x05,      /// public key of corresponding BIP32 path
-    SIGN_TX = 0x06,             /// sign transaction with BIP32 path
-    SIGN_TOKEN_TX = 0x07,       /// sign token transaction with BIP32 path and token address
-    PROVIDE_TOKEN_INFO = 0x22,  /// provide dynamic token info via CAL TLV descriptor
+    GET_VERSION = 0x03,
+    GET_APP_NAME = 0x04,
+    GET_PUBLIC_KEY = 0x05,
+    SIGN_TX = 0x06,
+    SIGN_TOKEN_TX = 0x07,
+    PROVIDE_TOKEN_INFO = 0x22,
     /* Falcon-1024 streaming */
     FALCON_KEYGEN = 0x30,
     FALCON_GET_PK = 0x31,
     FALCON_SIGN = 0x33,
     FALCON_KEYGEN_EXPAND = 0x34,
-    /* Falcon-512 streaming (v0.1.0) */
+    /* Falcon-512 streaming */
     FALCON512_KEYGEN = 0x40,
     FALCON512_GET_PK = 0x41,
     FALCON512_SIGN = 0x43,
     FALCON512_KEYGEN_EXPAND = 0x44,
-    /* Falcon-512 flash variant (v0.2.0) */
-    FALCON512_FLASH_KEYGEN        = 0x60,
-    FALCON512_FLASH_GET_PK        = 0x61,
-    FALCON512_FLASH_KEYGEN_EXPAND = 0x62,
-    FALCON512_FLASH_SIGN          = 0x63,
-    FALCON512_FLASH_GET_SIG       = 0x64,
-    FALCON512_FLASH_DUMP_NVM      = 0x65,
-    /* Falcon-1024 flash variant (v0.3.0 — NEW) */
-    FALCON1024_FLASH_KEYGEN        = 0x70, /// flash keygen (writes pk to NVRAM)
-    FALCON1024_FLASH_GET_PK        = 0x71, /// chunked pk read from NVRAM
-    FALCON1024_FLASH_KEYGEN_EXPAND = 0x72, /// LDL expand to NVRAM (90 112 B plaintext)
-    FALCON1024_FLASH_SIGN          = 0x73, /// flash sign (P1 same as 0x63)
-    FALCON1024_FLASH_GET_SIG       = 0x74, /// chunked sig retrieval (2048 B int16 LE)
-    FALCON1024_FLASH_DUMP_NVM      = 0x75  /// chunked NVRAM dump (debugging)
+    /* Falcon-512 flash variant (v0.2.0, unprotected sampler) */
+    FALCON512_FLASH_KEYGEN          = 0x60,
+    FALCON512_FLASH_GET_PK          = 0x61,
+    FALCON512_FLASH_KEYGEN_EXPAND   = 0x62,
+    FALCON512_FLASH_SIGN            = 0x63,
+    FALCON512_FLASH_GET_SIG         = 0x64,
+    FALCON512_FLASH_DUMP_NVM        = 0x65,
+    /* Falcon-512 flash, SCA-protected sampler (v0.4.0 — NEW)
+     * Same APDU contract as 0x63 (P1 sub-codes 0x00/0x06/0x08/0x09/0x10/0x91).
+     * Output sig lands at the same offset, retrievable via INS 0x64. */
+    FALCON512_FLASH_SIGN_PROTECT    = 0x66,
+    /* Falcon-1024 flash variant (v0.3.0) */
+    FALCON1024_FLASH_KEYGEN         = 0x70,
+    FALCON1024_FLASH_GET_PK         = 0x71,
+    FALCON1024_FLASH_KEYGEN_EXPAND  = 0x72,
+    FALCON1024_FLASH_SIGN           = 0x73,
+    FALCON1024_FLASH_GET_SIG        = 0x74,
+    FALCON1024_FLASH_DUMP_NVM       = 0x75
 } command_e;
 
-/**
- * Enumeration with parsing state.
- */
 typedef enum {
     STATE_NONE,
     STATE_PARSED,
     STATE_APPROVED
 } state_e;
 
-/**
- * Enumeration with user request type.
- */
 typedef enum {
     CONFIRM_ADDRESS,
     CONFIRM_TRANSACTION,
@@ -63,9 +57,6 @@ typedef enum {
     CONFIRM_BLIND_SIGN_HASH
 } request_type_e;
 
-/**
- * Structure for public key context information.
- */
 typedef struct {
     uint8_t raw_public_key[65];
     uint8_t chain_code[32];

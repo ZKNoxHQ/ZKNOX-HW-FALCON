@@ -21,9 +21,15 @@
 #include "sign_tx.h"
 #include "provide_token_info.h"
 
+#include "falcon_core.h"
+#if FALCON_CORE_LEGACY
 #include "handler_falcon.h"
 #include "handler_falcon_sign.h"
 #include "handler_falcon_keygen_expand.h"
+#endif
+#if FALCON_CORE_LOWRAM
+#include "handler_falcon_lowram.h"
+#endif
 
 int apdu_dispatcher(const command_t *cmd) {
     LEDGER_ASSERT(cmd != NULL, "NULL cmd");
@@ -94,6 +100,20 @@ int apdu_dispatcher(const command_t *cmd) {
             return handler_provide_token_info(&buf);
 
         /* ---- Falcon-1024 post-quantum signature ---- */
+#if FALCON_CORE_LOWRAM
+        case FALCON_LR_KEYGEN:
+        case FALCON_LR_GET_PK:
+        case FALCON_LR_SIGN:
+        case FALCON_LR_GET_SIG:
+            buf.ptr = cmd->data;
+            buf.size = cmd->lc;
+            buf.offset = 0;
+            if (cmd->ins == FALCON_LR_KEYGEN)  return handler_falcon_lr_keygen(&buf, cmd->p1, cmd->p2);
+            if (cmd->ins == FALCON_LR_GET_PK)  return handler_falcon_lr_get_pk(&buf, cmd->p1, cmd->p2);
+            if (cmd->ins == FALCON_LR_SIGN)    return handler_falcon_lr_sign(&buf, cmd->p1, cmd->p2);
+            return handler_falcon_lr_get_sig(&buf, cmd->p1, cmd->p2);
+#endif
+#if FALCON_CORE_LEGACY
         case FALCON_KEYGEN:
             /* v0.6.0: seed derived on-device via BIP-32. No data payload. */
             if (cmd->p1 != 0 || cmd->p2 != 0) {
@@ -129,6 +149,7 @@ int apdu_dispatcher(const command_t *cmd) {
             buf.size = cmd->lc;
             buf.offset = 0;
             return handler_falcon_keygen_expand(&buf, cmd->p1, cmd->p2);
+#endif /* FALCON_CORE_LEGACY */
 
         default:
             return io_send_sw(SWO_INVALID_INS);

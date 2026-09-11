@@ -23,7 +23,12 @@ typedef enum {
     FALCON_KEYGEN = 0x30,       /// Falcon keygen (BIP-32 derived seed, no host data)
     FALCON_GET_PK = 0x31,       /// retrieve Falcon public key chunks
     FALCON_SIGN = 0x33,         /// iterative Falcon sign (host-driven)
-    FALCON_KEYGEN_EXPAND = 0x34 /// stream v0.4.0 wire blob (ct||tag per node)
+    FALCON_KEYGEN_EXPAND = 0x34, /// stream v0.4.0 wire blob (ct||tag per node)
+    /* c-fn-dsa-alt core (Falcon Round 3), P2 = logn (9 or 10) */
+    FALCON_LR_KEYGEN = 0x50,  /// keygen (persistent, idempotent), returns h[0..255)
+    FALCON_LR_GET_PK = 0x51,  /// h chunks (uint16 host order)
+    FALCON_LR_SIGN = 0x53,    /// P1: 00 INIT, 06 FEED_MSG, 08 FEED_SEED, 09 GEN_SEED, 10 SIGN_ALL, 91 GET_NONCE
+    FALCON_LR_GET_SIG = 0x54  /// s2 chunks (int16 host order)
 } command_e;
 
 /**

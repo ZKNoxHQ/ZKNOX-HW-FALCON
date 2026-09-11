@@ -57,10 +57,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
-#include "../sw.h"
+#include "sw.h"
 #include "os.h"
 #include "buffer.h"
-#include "../globals.h"
+#include "globals.h"
 #include "send_response.h"
 #include "zkn_errors.h"
 #include "handler_falcon_keygen_expand.h"

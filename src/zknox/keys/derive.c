@@ -42,3 +42,27 @@ cx_err_t falcon_derive_seed(uint8_t falcon_seed[32]) {
 
     return err;
 }
+
+/* Same path, modifier "Falcon-512 seed": the Falcon-512 key is independent
+ * from the Falcon-1024 one. */
+cx_err_t falcon512_derive_seed(uint8_t falcon_seed[32]) {
+    static const uint8_t modifier[] = "Falcon-512 seed";
+    uint8_t chaincode[32];
+    uint32_t hardened_path[FALCON_BIP32_PATH_LEN];
+    cx_err_t err = CX_OK;
+
+    for (size_t i = 0; i < FALCON_BIP32_PATH_LEN; i++) {
+        hardened_path[i] = falcon_bip32_path[i] | 0x80000000u;
+    }
+    os_perso_derive_node_with_seed_key(HDW_ED25519_SLIP10,
+                                       CX_CURVE_Ed25519,
+                                       hardened_path,
+                                       FALCON_BIP32_PATH_LEN,
+                                       falcon_seed,
+                                       chaincode,
+                                       (unsigned char *) modifier,
+                                       sizeof(modifier) - 1);
+    explicit_bzero(chaincode, sizeof(chaincode));
+    explicit_bzero(hardened_path, sizeof(hardened_path));
+    return err;
+}

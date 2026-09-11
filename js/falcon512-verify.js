@@ -1,35 +1,35 @@
-/* falcon1024-verify.js — Falcon-1024 verify_raw in pure Node JS.
+/* falcon512-verify.js — Falcon-512 verify_raw in pure Node JS.
  *
  * Implements the exact same check as Zf(verify_raw) in zknox/falcon/vrfy.c:
  *
  *   Given:
- *     c0  — message hashed to point: 1024 uint16 in [0, q)
- *     s2  — second sig component: 1024 int16, |s2[i]| ≤ ~q/2 typically
- *     h   — public key polynomial: 1024 uint16 in [0, q)
+ *     c0  — message hashed to point: 512 uint16 in [0, q)
+ *     s2  — second sig component: 512 int16, |s2[i]| ≤ ~q/2 typically
+ *     h   — public key polynomial: 512 uint16 in [0, q)
  *
  *   Compute:
- *     s1 = c0 - s2 * h   (mod q, mod X^1024 + 1)
+ *     s1 = c0 - s2 * h   (mod q, mod X^512 + 1)
  *
  *   Accept iff:
- *     ||s1||² + ||s2||² ≤ BOUND_FALCON1024 = 70265242   (Falcon Round 3, n=1024)
+ *     ||s1||² + ||s2||² ≤ BOUND_FALCON512 = 34034726   (Falcon Round 3, n=512)
  *
- * Polynomial mult mod (X^1024 + 1) with q=12289 is done schoolbook
- * (~1M ops, ~50–100ms in V8). NTT would be faster but more code.
+ * Polynomial mult mod (X^512 + 1) with q=12289 is done schoolbook
+ * (~250K ops, ~15-30ms in V8). NTT would be faster but more code.
  *
  * EXPORTS
  *   verifyRaw(hm, sig, h) → bool
- *     hm:  Buffer of 2048 B (1024 LE uint16) — c0
- *     sig: Buffer of 2048 B (1024 LE int16) — s2 raw
- *     h:   Buffer of 2048 B (1024 LE uint16) — public key
+ *     hm:  Buffer of 1024 B (512 LE uint16) — c0
+ *     sig: Buffer of 1024 B (512 LE int16) — s2 raw
+ *     h:   Buffer of 1024 B (512 LE uint16) — public key
  */
 'use strict';
 
 const Q = 12289;
-const N = 1024;
-// Falcon Round 3 is_short() bound for n=1024 (logn=10): ||(s1, s2)||² <= l2bound[10]
-// (Round 2 used 7085 * 12289 = 87,067,565 with a strict '<'; the device now signs
-//  with the Round 3 sigma = 168.3886, so the Round 3 bound applies).
-const BOUND_FALCON1024 = 70265242n;
+const N = 512;
+// Falcon Round 3 is_short() bound for n=512 (logn=9): ||(s1, s2)||² <= l2bound[9]
+// (Round 2 used (7085 * 12289) >> 1 = 43,533,782 with a strict '<'; the device now signs
+//  with the Round 3 sigma = 165.7366, so the Round 3 bound applies).
+const BOUND_FALCON512 = 34034726n;
 
 function bufToU16LE(buf) {
     const a = new Uint16Array(N);
@@ -123,7 +123,7 @@ function verifyRaw(hmBuf, sigBuf, hBuf) {
         normSq += BigInt(v * v);
     }
 
-    return normSq <= BOUND_FALCON1024;
+    return normSq <= BOUND_FALCON512;
 }
 
 /**
@@ -177,14 +177,14 @@ function hashToPoint(nonce, msg) {
     return out;
 }
 
-module.exports = { verifyRaw, hashToPoint, Q, N, BOUND_FALCON1024 };
+module.exports = { verifyRaw, hashToPoint, Q, N, BOUND_FALCON512 };
 
 // Self-test if run directly
 if (require.main === module) {
     console.log('Falcon-1024 verify_raw module loaded.');
     console.log('  Q =', Q);
     console.log('  N =', N);
-    console.log('  bound (||s1||² + ||s2||² ≤) =', BOUND_FALCON1024.toString());
+    console.log('  bound (||s1||² + ||s2||² ≤) =', BOUND_FALCON512.toString());
     console.log();
     console.log('Quick smoke test of polyMulModXNplus1:');
     const a = new Int32Array(N);

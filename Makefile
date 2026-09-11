@@ -37,7 +37,21 @@ APPVERSION = "$(APPVERSION_M).$(APPVERSION_N).$(APPVERSION_P)"
 APP_SOURCE_PATH += src
 
 #comment to remove SCA protection
-DEFINES += FALCON_SCA_PROTECT=1       
+# Falcon core: lowram (c-fn-dsa-alt, Falcon Round 3 mode, default) or legacy (v0.7.0 tree streaming)
+FALCON_CORE ?= lowram
+# SCA-protected Gaussian sampler (Lin et al., PKC 2025): 1 = on (default), 0 = off
+FALCON_SCA_PROTECT ?= 1
+ifeq ($(FALCON_CORE),lowram)
+DEFINES += FALCON_CORE_LOWRAM=1
+DEFINES += FNDSA_FALCON_R3=1
+DEFINES += FNDSA_SAMPLER_PROTECT=$(FALCON_SCA_PROTECT)
+DEFINES += FNDSA_ASM_CORTEXM4=0
+else
+# archived v0.7.0 tree-streaming core (legacy/, not maintained)
+APP_SOURCE_PATH += legacy/src
+DEFINES += FALCON_CORE_LEGACY=1
+DEFINES += FALCON_SCA_PROTECT=$(FALCON_SCA_PROTECT)
+endif
  
 # Dilithium configuration
 DEFINES += DILITHIUM_MODE=2

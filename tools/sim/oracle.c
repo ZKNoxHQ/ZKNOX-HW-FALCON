@@ -1,20 +1,24 @@
-/* Host oracle on the legacy reference library (compiled verify-only): Falcon hash_to_point + verify_raw. */
+/* Host oracle: Falcon Round 3 verification built on the low-RAM core's own primitives
+ * (Falcon-mode hash_to_point: SHAKE256(nonce || msg), big-endian words; NTT mod q).
+ *   s1 = c - s2*h mod q (centered), accept iff ||s1||^2 + ||s2||^2 <= l2bound[logn]. */
 #include <stdint.h>
 #include <string.h>
-#include "inner.h"
-int oracle_verify(unsigned logn, const uint16_t *h_raw, const uint8_t *nonce, const uint8_t *msg, size_t msg_len, const int16_t *s2, uint32_t *sqn_out) {
-    static uint16_t h[1024], hm[1024]; static uint8_t tmp[8192];
+#include "fndsa_inner.h"
+
+int oracle_verify(unsigned logn, const uint16_t *h_raw, const uint8_t *nonce, const uint8_t *msg, size_t msg_len,
+                  const int16_t *s2, uint32_t *sqn_out) {
+    static uint16_t c[1024], h[1024], t[1024];
     size_t n = (size_t)1 << logn;
-    memcpy(h, h_raw, 2 * n);
-    inner_shake256_context xof;
-    Zf(i_shake256_init)(&xof); Zf(i_shake256_inject)(&xof, nonce, 40); Zf(i_shake256_inject)(&xof, msg, msg_len);
-    Zf(i_shake256_flip)(&xof); Zf(hash_to_point_vartime)(&xof, hm, logn);
-    if (sqn_out) {   /* ||s1||^2 + ||s2||^2 (schoolbook) */
-        static int64_t acc[2048]; memset(acc, 0, sizeof acc); uint64_t sqn = 0;
-        for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) { int64_t p = (int64_t)s2[i] * h_raw[j]; size_t k = i + j; if (k >= n) acc[k - n] -= p; else acc[k] += p; }
-        for (size_t i = 0; i < n; i++) { int64_t v = ((int64_t)hm[i] - acc[i]) % 12289; if (v < 0) v += 12289; if (v > 6144) v -= 12289; sqn += (uint64_t)(v * v) + (uint64_t)((int64_t)s2[i] * s2[i]); }
-        *sqn_out = (uint32_t)sqn;
+    hash_to_point(logn, nonce, msg, msg_len, c);      /* ext: 0..q-1 */
+    memcpy(h, h_raw, 2 * n); mqpoly_ext_to_int(logn, h); mqpoly_int_to_ntt(logn, h);
+    for (size_t i = 0; i < n; i++) t[i] = (uint16_t)s2[i];
+    mqpoly_signed_to_int(logn, t); mqpoly_int_to_ntt(logn, t); mqpoly_mul_ntt(logn, t, h); mqpoly_ntt_to_int(logn, t);
+    mqpoly_ext_to_int(logn, c); mqpoly_sub(logn, c, t); mqpoly_int_to_ext(logn, c);   /* c = s1, ext */
+    uint64_t sqn = 0;
+    for (size_t i = 0; i < n; i++) {
+        int32_t v = c[i] > 6144 ? (int32_t)c[i] - 12289 : (int32_t)c[i];
+        sqn += (uint64_t)(v * v) + (uint64_t)((int32_t)s2[i] * s2[i]);
     }
-    Zf(to_ntt_monty)(h, logn);
-    return Zf(verify_raw)(hm, s2, h, logn, tmp);
+    if (sqn_out) *sqn_out = (uint32_t)sqn;
+    return sqn <= (logn == 9 ? 34034726u : 70265242u);
 }

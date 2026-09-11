@@ -1,0 +1,19 @@
+{
+  "mnemonic": "yellow x12, no passphrase",
+  "message": "sha256('falcon-core-test ' + i)",
+  "seed": "40 bytes of (0xA0 + i)",
+  "pk_sha256": {
+    "9": "d058c32a17758dee5cccd3e77a58591be757dda43af812c6f5043d23d841e0bc",
+    "10": "6a3c1570bd7b86c2ace25d449a893d077e0870f485182972df3c0e8df3b44f6f"
+  },
+  "s2_sha256": {
+    "plain": {
+      "9": ["0351762400e4f302c9744ceda609762b99b589501f4eba32ef72942170ada69d", "eb2aa162bfccaa5ba377fe1f2dbc9b5fd68b2a44653e7abb4edcfb721b3ff0e9"],
+      "10": ["83550933faa1678b0fd7488583735e29d9e27cd0bd6988966774c09bc08e87a8", "150e5c608de3af38783873b09b727644ab7e90c0289db99eba6f993436af9623"]
+    },
+    "protected": {
+      "9": ["538b4f790afa93f79e401c3e49cffb93fb3925e3bd99e181b37ef7d4c05042d0", "07fa3b06b5443c10563bfab6eb10c8754f2522dc82e64a2de7a9044f9648065b"],
+      "10": ["6d4822675f5bc2764e64b7e14e51212f75c9e105f60aaf41d6061223b61d146c", "866129f8f6882977b45d6d65b2525fd3a330c087db917b1fdada1a47c2d9205b"]
+    }
+  }
+}

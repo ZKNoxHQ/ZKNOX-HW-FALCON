@@ -33,12 +33,7 @@
 global_ctx_t G_context;
 
 // Global variable for ZKNOX
-#if FALCON_CORE_LEGACY
-zknox_storage_t g_zknox;
-#endif
-#if FALCON_CORE_LOWRAM
 falcon_lr_storage_t g_falcon_lr;
-#endif
 
 const internal_storage_t N_storage_real;
 

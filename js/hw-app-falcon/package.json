@@ -1,0 +1,27 @@
+{
+  "name": "@zknox/hw-app-falcon",
+  "version": "0.1.0",
+  "description": "Ledger hw-app for the ZKNOX Falcon (Round 3) signer: key retrieval and 32-byte digest signing over the low-RAM core APDUs",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "MIT",
+  "repository": "github:ZKNoxHQ/ZKNOX-HW-FALCON",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:device": "FALCON_DEVICE=1 node --test test/device.test.js"
+  },
+  "peerDependencies": {
+    "@ledgerhq/hw-transport": ">=6.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@ledgerhq/hw-transport-node-hid": "^6.33.1"
+  }
+}

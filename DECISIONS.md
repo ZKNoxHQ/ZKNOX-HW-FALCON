@@ -13,7 +13,8 @@ parameters are exactly Falcon Round 3, only the FN-DSA encodings and hashing dif
 **Decision**: use c-fn-dsa-alt as the signing core, in a Falcon Round 3 compatibility mode confined to the
 periphery (`hash_to_point` endianness and input, raw key input, raw s2 output), so that the existing verifiers
 (PQClean KATs, JS, on-chain) are untouched. Port the Lin et al. SamplerZ countermeasure onto its sampler.
-Keep the legacy core selectable (`FALCON_CORE=legacy`) until the device measurements are in.
+The legacy core stays selectable on `main` (`FALCON_CORE=legacy`) for history; the `lowram-light` branch
+drops it.
 
 **Consequences**:
 - One APDU signs; keygen + sign fit in a 27 648-byte area; no NVM tree, no host round trip, no z export.

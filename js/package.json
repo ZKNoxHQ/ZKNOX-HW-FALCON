@@ -1,5 +1,11 @@
 {
+  "private": true,
   "dependencies": {
-    "@ledgerhq/hw-transport-node-hid": "^6.33.1"
+    "@ledgerhq/hw-transport-node-hid": "^6.33.1",
+    "@zknox/hw-app-falcon": "file:./hw-app-falcon"
+  },
+  "scripts": {
+    "test": "cd hw-app-falcon && npm test",
+    "device": "node falcon-lowram-test.js"
   }
 }

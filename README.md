@@ -6,11 +6,36 @@ backward compatibility: the signatures verify with the Falcon Round 3 reference 
 KAT-validated JS verifiers and the ZKNOX on-chain verifiers, unchanged.
 
 One APDU signs. Key generation and signing run in a 27 648-byte working area, without expanded key, LDL tree,
-NVM tree or host round trip. The private key is persisted per degree in the secure element's NVM, so a fresh
-session signs directly. An SCA-protected Gaussian sampler (Lin et al., PKC 2025) is selectable at build time.
+NVM tree or host round trip. Nothing is stored: the key is regenerated from the SLIP-10 seed by the first APDU
+of a session that needs it (fixed-point keygen, deterministic) and kept in RAM, in the Ledger way; persisting it
+in NVM is a build option. An SCA-protected Gaussian sampler (Lin et al., PKC 2025) is selectable at build time.
 
-The previous implementation (v0.7.0, tree streamed by the host, INS 0x30..0x34) is archived under `legacy/`
-with its own README.
+## Branches
+
+| Branch | Content |
+|---|---|
+| `lowram-light` | This branch: the low-RAM core only. No legacy code, no core switch; `make` builds the app described here. |
+| `main` | Same low-RAM app plus the archived v0.7.0 implementation under `legacy/` (tree streamed by the host, INS 0x30..0x34, its README and JS harness), selectable with `make FALCON_CORE=legacy`. Kept for history and for re-running the old benchmarks. |
+| `feat/512` | Historical Falcon-512 work on the streaming core, superseded by this branch (both degrees are handled by the same handler here). |
+
+## Benchmark
+
+Measured on a Ledger Nano S+ (32 MHz), C paths only, wall clock per APDU from `js/falcon-lowram-test.js`
+(USB round trip included, negligible against the computation):
+
+| | Falcon-512 | Falcon-1024 | v0.7.0, Falcon-1024 (`main`, `legacy/`) |
+|---|---:|---:|---:|
+| Key generation (once per session and per degree) | 1.05 s | 3.2 s | 17.8 s, plus 14.6 s of expand |
+| Signature, plain sampler | 0.63 s | 1.35 s | 12.8 s |
+| Signature, SCA-protected sampler | 3.2 s | 6.35 s | 17.4 s |
+| First signature of a session (plain / protected) | 1.7 s / 4.3 s | 4.5 s / 9.5 s | ≈ 45 s / 50 s |
+| s2 transfer (GET_SIG) | 45 ms | 75 ms | — |
+| APDUs per signature | 13 | 13 | ≈ 730 |
+| Secret material at rest | none | none | encrypted tree on the host |
+| BSS | 29 848 B | 29 848 B | 35 880 B |
+
+Signatures are bit-identical to the host implementation for the same seed, message and key, in both sampler
+builds; the SCA countermeasure costs ×5 on the signature, entirely in the sampler.
 
 ## What the core is
 
@@ -69,27 +94,29 @@ src/falcon_lowram/                    Pornin's core in Falcon mode (see its READ
 src/handler/handler_falcon_lowram.c   APDUs 0x50..0x54, session seed, NVM persistence
 src/handler/falcon_lowram_nvm.h       NVM key records
 src/zknox/keys/derive.c               SLIP-10 seed derivation (Falcon-1024 and Falcon-512 modifiers)
-src/falcon_core.h                     core selection (lowram | legacy)
 tools/sim/                            host simulation of the handlers with a BOLOS shim
 js/                                   device test and JS verifiers
-legacy/                               v0.7.0 core, handlers, harness and README (archived)
 ```
 
 RAM: `g_falcon_lr` = 29 848 B of BSS: the 27 648-byte working area shared by keygen and sign (keygen temp,
-plus the encoded key emitted by the keygen, decoded to raw f, g, F, h before persistence), the output buffer
+the encoded key emitted by the keygen, then the raw session key f, g, F, h kept after the signing temp), the output buffer
 (header, nonce, raw s2), the message, the signing seed and the session seed. v0.7.0 needed 35 880 B of BSS plus
 a 90 KB encrypted tree on the host.
 
 ## Key management
 
 - Seed: SLIP-10 over the device mnemonic, path `m/44'/9004'/0'/0'/0'`, modifier `"Falcon-1024 seed"` or
-  `"Falcon-512 seed"` (independent keys). Derived once per session into RAM, never written to NVM.
-- NVM record per degree (`falcon_lowram_nvm.h`): `key_id | f | g | F | h | fmt | ready`, with
-  `key_id = SHAKE256("falcon-key-id" ‖ seed)`. `ready` is cleared before a record is rewritten and set last.
-- `FALCON_LR_KEYGEN` is idempotent: if the derived seed matches the stored `key_id`, it returns the stored
-  public key in milliseconds and computes nothing. A new mnemonic invalidates the record and regenerates.
-- `FALCON_LR_SIGN` needs neither KEYGEN nor any expansion in a fresh session. `fmt` invalidates records written
-  by a firmware with another key layout.
+  `"Falcon-512 seed"` (independent keys). Derived into RAM only when a keygen runs, wiped right after.
+- Default (`FALCON_LR_PERSIST_KEY=0`): no key at rest. The first APDU of a session that needs the key
+  (KEYGEN, GET_PK or SIGN_ALL) regenerates it from the seed and keeps f, g, F, h in the tail of the working
+  area for the rest of the session; the other degree replaces it. The keygen being deterministic, the key is
+  the same every time. Cost: one keygen per session and per degree (1.05 s for 512, 3.2 s for 1024).
+- Option (`FALCON_LR_PERSIST_KEY=1`): NVM record per degree (`falcon_lowram_nvm.h`):
+  `key_id | f | g | F | h | fmt | ready`, `key_id = SHAKE256("falcon-key-id" ‖ seed)`, `ready` cleared before a
+  rewrite and set last. A session then signs without any keygen; a new mnemonic regenerates. Useful only if the
+  keygen turns out too slow for the UX.
+- `FALCON_LR_KEYGEN` P1=0 is idempotent within a session (and across sessions with NVM); P1=1 forces a
+  recomputation (benchmark).
 
 ## APDU specification
 
@@ -97,7 +124,7 @@ CLA `0xE0`. All INS take `P2 = logn`: `9` (Falcon-512) or `10` (Falcon-1024).
 
 | INS | Name | P1 | Data | Response |
 |-----|------|----|------|----------|
-| `0x50` | `FALCON_LR_KEYGEN` | 0 | — | first 255 bytes of h (uint16 host order) |
+| `0x50` | `FALCON_LR_KEYGEN` | 0 (1: force recomputation) | — | first 255 bytes of h (uint16 host order) |
 | `0x51` | `FALCON_LR_GET_PK` | chunk index | — | 255-byte chunks of h, 2n bytes in total |
 | `0x53` | `FALCON_LR_SIGN` | `0x00` INIT | — | — |
 | | | `0x06` FEED_MSG | 32 bytes (hash of the payload) | — |
@@ -117,38 +144,39 @@ Status words: `0x9000` success, `0x6A86` bad P1/P2 (including an unsupported log
 ## Build options
 
 ```
-make                          # FALCON_CORE=lowram, FALCON_SCA_PROTECT=1
-make FALCON_SCA_PROTECT=0     # plain sampler
-make FALCON_CORE=legacy       # archived v0.7.0 core from legacy/src (unmaintained)
+make                            # FALCON_SCA_PROTECT=1, FALCON_LR_PERSIST_KEY=0
+make FALCON_SCA_PROTECT=0       # plain sampler
+make FALCON_LR_PERSIST_KEY=1    # key persisted in NVM (no keygen per session)
 ```
 
 The Nano S+ target is `cortex-m35p+nodsp -msoft-float`. Pornin's Cortex-M4 assembly uses DSP instructions and
 FPU registers as scratch, so the C paths are compiled for now. Two of his assembly files are DSP-free
 (`sign_sampler`, `codec`) and the Falcon reference's fpr assembly is plain Thumb-2: candidates for a later port.
 
-## Performance
+## Performance notes
 
-Host measurements (x86-64, pure C, same emulated arithmetic as the device) per signature:
-
-| | Falcon-512 | Falcon-1024 |
-|---|---:|---:|
-| plain sampler | 2.5 ms, 56 K add + 48 K mul | 5.3 ms, 116 K add + 99 K mul |
-| SCA-protected sampler | 15.9 ms, 252 K add + 306 K mul | 32.2 ms, 520 K add + 626 K mul |
-| keygen (fixed point, no float) | 4.3 ms | 14.2 ms |
-
-Upstream reports 13.45 Mcycles per Falcon-512 signature on a Cortex-M4 with assembly, about twice that in C;
-the SCA countermeasure multiplies the signature cost by about 6 (measured on host). Device timings are printed
-per APDU by `js/falcon-lowram-test.js` and will replace these numbers once measured (v0.7.0: 12.8 s per
-Falcon-1024 signature, 17.4 s protected, at 32 MHz).
+Device numbers are in the Benchmark section. The keygen is the fixed-point NTRU solver (no floating-point
+emulation); with the key kept in RAM it runs once per session. Host reference (x86-64, same C code):
+2.5 / 5.3 ms per plain signature, 15.9 / 32.2 ms protected, 4.3 / 14.2 ms keygen, 56 K add + 48 K mul (512)
+and 116 K add + 99 K mul (1024) emulated-float operations per plain signature (the v0.7.0 core needed
+130 K + 101 K and 289 K + 221 K for the signature alone). Next levers, in order: the fpr routines in Thumb-2
+assembly (the Falcon reference's, DSP-free), Pornin's DSP-free assembly of the sampling recursion (stack from
+~2.5 KB to ~1 KB), then the NTT and Keccak routines.
 
 ## Testing
 
-- `tools/sim`: `./build.sh [SCA=0|1] && python3 derive_seed.py && ./sim_lowram [N]` drives the unmodified
+- `tools/sim`: `[SCA=0|1] [PERSIST=0|1] ./build.sh && python3 derive_seed.py && ./sim_lowram [N]` drives the unmodified
   handlers through `apdu_dispatcher()` with a BOLOS shim (yellow×12 seeds derived on host). It checks the
-  public keys against a host run of the keygen, verifies every signature with the archived Falcon reference
-  `verify_raw`, replays a signature after a simulated restart without KEYGEN (byte-identical with the same
+  public keys against a host run of the keygen, verifies every signature with a Falcon Round 3 oracle built on
+  the core's own primitives, replays a signature after a simulated restart without KEYGEN (byte-identical with the same
   seed), checks that a repeated KEYGEN writes nothing to NVM, and reports ‖s‖² statistics against 2n·σ².
-- `js/falcon-lowram-test.js [logn] [count] [--seeded]`: device flow with per-APDU timings and JS verification.
+- `js/hw-app-falcon`: `@zknox/hw-app-falcon`, the Ledger hw-app for this signer (`getPublicKey`, `signHash`,
+  `generateKey`), transport-agnostic. `npm test` runs on a mock transport; `npm run test:device` runs on the
+  device (identity, both degrees, keygen timing, TRNG signatures verified on the host, seeded yellow x12 KATs
+  that also identify the sampler build). Verifier-specific encodings are out of its scope: they belong to the
+  verifier (ETHFALCON) and account packages.
+- `js/falcon-lowram-test.js [logn] [count] [--seeded] [--force-keygen]`: device flow on top of the hw-app with
+  per-APDU timings and JS verification; `--force-keygen` measures the actual key generation.
 - `js/kat_validation`: the JS verifier against the PQClean Falcon-1024 KATs.
 
 Test vectors, mnemonic `yellow × 12`, no passphrase (SHA-256 of the raw h):
@@ -166,7 +194,7 @@ Signatures are randomized (TRNG seed) unless FEED_SEED is used.
   (Guerreau et al. 2022; Zhang, Lin, Yu, Wang 2023): with the Lin et al. countermeasure the single-trace
   template accuracy drops to about 58–62 %, below the 65 % threshold above which their key recovery needs
   more than 10 million traces. Fault attacks, floating-point error sensitivity ("Do Not Disturb a Sleeping
-  Falcon") and attacks on the FFT are out of scope, as in v0.7.0.
+  Falcon") and attacks on the FFT are out of scope.
 - The core is constant-time by construction (upstream); the countermeasure adds no branch on secrets.
 - The private key sits at rest in the secure element's NVM; the seed only derives `key_id`.
 

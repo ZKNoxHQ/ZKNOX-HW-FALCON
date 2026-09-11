@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased] — hw-app-falcon
+- `js/hw-app-falcon/`: `@zknox/hw-app-falcon`, Ledger hw-app for the signer (transport-agnostic):
+  `getPublicKey`, `signHash` (32-byte digest, TRNG seed, optional test seed), `generateKey`, `getVersion`,
+  `getAppName`; status words mapped to `FalconAppError`. Unit tests on a mock transport (`npm test`) and a
+  real-device suite (`npm run test:device`: identity, both degrees, forced keygen timing, TRNG signatures
+  verified on the host, yellow x12 seeded KATs identifying the sampler build).
+- `js/falcon-lowram-test.js` rewritten on top of the hw-app (same output, `FALCON_MOCK=1` dry run).
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
@@ -45,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial commit with the brand new Boilerplate application
 
+## [Unreleased] — lowram-light branch
+- Low-RAM core only: `legacy/`, `src/falcon_core.h` and the `FALCON_CORE` switch removed; INS 0x30..0x34 gone.
+- `tools/sim` verifies with a Falcon Round 3 oracle built on the core's primitives (no reference library needed).
+- README: branches and device benchmark.
+
 ## [Unreleased] — Falcon on the low-RAM core (c-fn-dsa-alt in Falcon mode)
 
 ### Added
@@ -54,8 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Files renamed with the `fndsa_` prefix (the SDK flattens object names); `fndsa_sysrng.c` uses `cx_rng_no_throw`.
 - `src/handler/handler_falcon_lowram.c`: INS 0x50 KEYGEN, 0x51 GET_PK, 0x53 SIGN (INIT / FEED_MSG / FEED_SEED / GEN_SEED /
   SIGN_ALL / GET_NONCE), 0x54 GET_SIG, all with P2 = logn (9 or 10). Single-APDU signature, no tree, no expand,
-  no host round trip. Key persisted per degree in NVM (`falcon_lowram_nvm.h`: key_id | f | g | F | h), bound to
-  `key_id = SHAKE256("falcon-key-id" || seed)`; KEYGEN idempotent; SIGN needs no KEYGEN in a fresh session.
+  no host round trip. By default no key at rest (`FALCON_LR_PERSIST_KEY=0`): the key is regenerated from the
+  seed once per session and kept in RAM; `FALCON_LR_PERSIST_KEY=1` persists it per degree in NVM
+  (`falcon_lowram_nvm.h`: key_id | f | g | F | h, bound to `key_id = SHAKE256("falcon-key-id" || seed)`).
+  KEYGEN is idempotent (P1 = 1 forces a recomputation).
 - `src/falcon_core.h` + Makefile `FALCON_CORE=lowram|legacy`: the two cores are exclusive (same RAM budget).
   Default `lowram`; `legacy` rebuilds the v0.7.0 tree-streaming app (INS 0x30..0x34) unchanged.
 - Falcon-512 seed derivation (`falcon512_derive_seed`, modifier "Falcon-512 seed", same path).
@@ -68,6 +83,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zkn_*.h`, the streaming JS harness and its yellow×12 vectors) and the previous README are archived under
   `legacy/`; `make FALCON_CORE=legacy` builds them from `legacy/src`. `tools/apply_lowram_layout.sh` removes
   the old copies from `src/` and `js/` after unzipping a delivery.
+
+### Measured on device (Nano S+, C paths)
+- keygen 1.05 s (512) / 3.2 s (1024); signature 0.63 s / 1.35 s plain, 3.2 s / 6.35 s with the SCA-protected
+  sampler; 13 APDUs per signature; signatures bit-identical to the host implementation for the same inputs.
 
 ### RAM
 - `g_falcon_lr` = 29 848 B of BSS (27 648 B working area shared by keygen and sign + output buffers), instead of

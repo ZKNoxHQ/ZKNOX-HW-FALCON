@@ -1,6 +1,6 @@
 /*
  * sim_lowram.c — drives the app's FALCON_CORE_* APDUs through apdu_dispatcher() on host.
- * Checks: keygen determinism (host reference), sign -> verify (legacy reference verify_raw),
+ * Checks: keygen determinism (host reference), sign -> verify (Falcon Round 3 oracle),
  * persistence across a simulated restart, idempotent keygen, signature-norm statistics.
  */
 #include <stdint.h>
@@ -78,18 +78,19 @@ int main(int argc, char **argv) {
         pull(0x51, logn, 2 * n, pk); sha256_hex(pk, 2 * n, "pk (raw h)");
         { char ref[64]; snprintf(ref, 64, "ref_h%u.bin", 1u << logn); FILE *f = fopen(ref, "rb");
           if (f) { static uint8_t r[2048]; size_t rn = fread(r, 1, 2 * n, f); fclose(f); printf("  vs host low-RAM keygen (%s): %s\n", ref, (rn == 2 * n && !memcmp(r, pk, 2 * n)) ? "BYTE-MATCH" : "MISMATCH"); } }
-        g_nvm_write_calls = 0; need(apdu(0x50, 0, logn, NULL, 0), "KEYGEN again"); printf("  KEYGEN again (same seed): %lu nvm_write (expected 0)\n", g_nvm_write_calls);
+        g_nvm_write_calls = 0; c0 = clock(); need(apdu(0x50, 0, logn, NULL, 0), "KEYGEN again"); printf("  KEYGEN again (same session): %.1f ms, %lu nvm_write (expected 0)\n", (double)(clock() - c0) * 1000.0 / CLOCKS_PER_SEC, g_nvm_write_calls);
+        g_nvm_write_calls = 0; c0 = clock(); need(apdu(0x50, 1, logn, NULL, 0), "KEYGEN forced"); printf("  KEYGEN forced (P1=1): %.1f ms, %lu nvm_write (0 in RAM mode, 6 with FALCON_LR_PERSIST_KEY=1), pk %s\n", (double)(clock() - c0) * 1000.0 / CLOCKS_PER_SEC, g_nvm_write_calls, memcmp(g_resp, pk, 255) ? "CHANGED" : "unchanged");
         double ms; uint32_t sqn;
         if (!sign_once(logn, msg, seed40, nonce, s2, &ms)) { printf("  SIGN failed\n"); return 1; }
         int ok = oracle_verify(logn, (uint16_t *)pk, nonce, msg, 32, s2, &sqn);
-        printf("  SIGN_ALL (seeded): %.1f ms host; legacy verify_raw: %s, ||s||^2 = %u (bound %u)\n", ms, ok ? "VALID" : "INVALID", sqn, logn == 9 ? 34034726u : 70265242u);
+        printf("  SIGN_ALL (seeded): %.1f ms host; Falcon verify: %s, ||s||^2 = %u (bound %u)\n", ms, ok ? "VALID" : "INVALID", sqn, logn == 9 ? 34034726u : 70265242u);
         { char fn[64]; snprintf(fn, 64, "sig%u.bin", 1u << logn); FILE *f = fopen(fn, "wb"); fwrite(nonce, 1, 40, f); fwrite(s2, 2, n, f); fclose(f);
           snprintf(fn, 64, "pk%u.bin", 1u << logn); f = fopen(fn, "wb"); fwrite(pk, 1, 2 * n, f); fclose(f); fwrite(msg, 1, 32, f = fopen("msg32.bin", "wb")); fclose(f); }
         /* restart: BSS wiped, NVM kept -> SIGN without KEYGEN, same seed -> same signature */
         static int16_t s2b[1024]; static uint8_t nonceb[40];
         memset(&g_falcon_lr, 0, sizeof g_falcon_lr);
-        if (!sign_once(logn, msg, seed40, nonceb, s2b, NULL)) { printf("  SIGN after restart failed\n"); return 1; }
-        printf("  after restart, no KEYGEN: signature %s\n", (!memcmp(nonce, nonceb, 40) && !memcmp(s2, s2b, 2 * n)) ? "identical (deterministic seed)" : "DIFFERENT");
+        double msr; if (!sign_once(logn, msg, seed40, nonceb, s2b, &msr)) { printf("  SIGN after restart failed\n"); return 1; }
+        printf("  after restart, no KEYGEN: SIGN_ALL %.1f ms (includes the implicit keygen in RAM mode), signature %s\n", msr, (!memcmp(nonce, nonceb, 40) && !memcmp(s2, s2b, 2 * n)) ? "identical (deterministic seed)" : "DIFFERENT");
         /* stats with TRNG seeds */
         double sum = 0, sum2 = 0, tsum = 0; int rej = 0;
         for (int it = 0; it < nstat; it++) {
@@ -101,7 +102,7 @@ int main(int argc, char **argv) {
         int okn = nstat - rej; double mean = sum / okn, sigma = logn == 9 ? 165.7366171829776 : 168.38857144654395, exp_ = 2.0 * n * sigma * sigma;
         printf("  %d TRNG-seeded signatures: all verify, mean ||s||^2 / 2n*sigma^2 = %.4f, sd %.0f, %d failed, %.1f ms/sig host\n", okn, mean / exp_, sqrt(sum2 / okn - mean * mean), rej, tsum / okn);
     }
-    printf("== BSS: sizeof(g_falcon_lr) = %zu B (area %d)\n", sizeof(falcon_lr_storage_t), FALCON_LR_AREA_SIZE);
+    printf("== BSS: sizeof(g_falcon_lr) = %zu B (area %d), FALCON_LR_PERSIST_KEY=%d\n", sizeof(falcon_lr_storage_t), FALCON_LR_AREA_SIZE, FALCON_LR_PERSIST_KEY);
     printf("== done\n");
     return 0;
 }
